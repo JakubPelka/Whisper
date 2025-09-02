@@ -2,14 +2,15 @@
 """
 transcribe_diarize.py
 - Okna (tkinter): wybór jednego lub wielu plików audio + wybór wspólnego folderu docelowego
-- Terminal: pytanie o tryb (Faster/More accurate), wybór języka (pl/en/sv/auto/other) i modelu Whisper
+- Terminal: pytanie o tryb (Faster/More accurate/Default), wybór języka (pl/en/sv/auto/other) i modelu Whisper
 - Token HF (pyannote 3.1) zapisany w skrypcie
 - Diarization: pyannote 3.1 (gated) z fallbackiem do legacy
 - Transkrypcja: Whisper (domyślnie large-v3)
 - Wyniki dla każdego pliku: RAW i MERGED → 2×TXT + 2×JSON
 - Po przetworzeniu:
-    * czyści tymczasowy folder _tmp_diar (dla danego pliku),
+    * czyści cały tymczasowy folder per plik (_tmp_diar_{stem}),
     * przenosi oryginalny plik do subfolderu processed_files/ obok źródła
+    * zapisuje transkrypcje w: <OUTDIR>/transkrypcje/raw oraz <OUTDIR>/transkrypcje/merged
 """
 
 import os
@@ -42,7 +43,7 @@ torch.backends.cudnn.allow_tf32 = True
 
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".aac", ".wma", ".ogg", ".flac", ".mkv", ".mp4", ".m4b"}
 
-# --- domyślne parametry (modyfikowane przez preset Fast/Accurate) ---
+# --- domyślne parametry (modyfikowane przez preset Fast/Accurate/Default) ---
 WHISPER_TEMPERATURE = 0.0
 WHISPER_BEAM_SIZE = 4
 WHISPER_BEST_OF = 4
@@ -81,8 +82,8 @@ def pick_files_and_folder():
         # awaryjnie terminal (gdyby tkinter nie działał)
         print("Nie udało się użyć okienek (tkinter). Używam konsoli.")
         raw = input("Podaj ścieżki do plików audio (oddzielone średnikiem ';'): ").strip()
-        paths = [Path(p.strip().strip('"')) for p in raw.split(";") if p.strip()]
-        outdir = input("Folder docelowy (ENTER = folder pierwszego pliku): ").strip('" ')
+        paths = [Path(p.strip().strip('\"')) for p in raw.split(';') if p.strip()]
+        outdir = input("Folder docelowy (ENTER = folder pierwszego pliku): ").strip('\" ')
         if not outdir and paths:
             outdir = str(paths[0].parent)
         return paths, Path(outdir)
@@ -114,20 +115,26 @@ def slice_segment(audio: AudioSegment, start_s: float, end_s: float) -> AudioSeg
         b = a + 1
     return audio[a:b]
 
+
 def choose_preset_term():
     global WHISPER_BEAM_SIZE, WHISPER_BEST_OF
     print("\nTryb pracy:")
     print("  1) Faster         (beam_size=1, best_of=1)")
     print("  2) More accurate  (beam_size=8, best_of=8)")
-    ch = input("Twój wybór [1-2] (ENTER=More accurate): ").strip()
+    print("  3) Default        (beam_size=4, best_of=4)")
+    ch = input("Twój wybór [1-3] (ENTER=Default): ").strip()
     if ch == "1":
         WHISPER_BEAM_SIZE = 1
         WHISPER_BEST_OF = 1
-        print("Preset: Faster")
-    else:
+        print("Preset: Faster (1/1)")
+    elif ch == "2":
         WHISPER_BEAM_SIZE = 8
         WHISPER_BEST_OF = 8
-        print("Preset: More accurate")
+        print("Preset: More accurate (8/8)")
+    else:
+        WHISPER_BEAM_SIZE = 4
+        WHISPER_BEST_OF = 4
+        print("Preset: Default (4/4)")
 
 def choose_language_term():
     print("\nWybierz język transkrykcji:")
@@ -175,11 +182,30 @@ def safe_unique_move(src: Path, dst_dir: Path):
         i += 1
 
 def cleanup_dir(path: Path):
-    try:
-        if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
-    except Exception:
-        pass
+    """Usuń CAŁY katalog (zawartość + folder), nawet na Windows (readonly/uchwyty)."""
+    import stat, time, gc
+
+    def _on_rm_error(func, p, exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except Exception:
+            pass
+
+    for attempt in range(3):
+        try:
+            if path.exists():
+                shutil.rmtree(path, onerror=_on_rm_error)
+            break
+        except Exception:
+            gc.collect()
+            time.sleep(0.2)
+
+    if path.exists():
+        try:
+            os.rmdir(path)
+        except Exception:
+            pass
 
 def load_whisper(model_name: str):
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -283,8 +309,15 @@ def process_one_file(input_path: Path, out_dir: Path, language, whisper_model, w
     assert input_path.exists(), f"Brak pliku: {input_path}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1) przygotowanie audio
-    work_dir = input_path.parent / "_tmp_diar"
+    # 0) przygotuj strukturę docelową: transkrypcje/raw i transkrypcje/merged
+    trans_root = out_dir / "transkrypcje"
+    raw_dir = trans_root / "raw"
+    merged_dir = trans_root / "merged"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    merged_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1) przygotowanie audio — unikalny katalog tymczasowy per plik
+    work_dir = input_path.parent / f"_tmp_diar_{input_path.stem}"
     wav_path = ensure_wav_mono16k(input_path, work_dir)
     whole = AudioSegment.from_file(str(wav_path))
 
@@ -318,6 +351,8 @@ def process_one_file(input_path: Path, out_dir: Path, language, whisper_model, w
         clip = slice_segment(whole, s, e)
         seg_path = seg_dir / f"{input_path.stem}_seg{i:04d}.wav"
         clip.export(str(seg_path), format="wav")
+        # zwolnij pamięć klipu
+        del clip
 
         text = transcribe_segment(whisper_model, seg_path, language)
         raw_segments.append({
@@ -330,12 +365,12 @@ def process_one_file(input_path: Path, out_dir: Path, language, whisper_model, w
     # 5) scalanie (MERGED)
     merged_segments = merge_segments(raw_segments) if MERGE_ENABLED else list(raw_segments)
 
-    # 6) zapisy RAW & MERGED
+    # 6) zapisy RAW & MERGED (do transkrypcje/raw i transkrypcje/merged)
     base = input_path.stem
-    raw_txt    = out_dir / f"{base}_raw.txt"
-    merged_txt = out_dir / f"{base}_merged.txt"
-    raw_json   = out_dir / f"{base}_raw.json"
-    merged_json= out_dir / f"{base}_merged.json"
+    raw_txt    = raw_dir / f"{base}_raw.txt"
+    raw_json   = raw_dir / f"{base}_raw.json"
+    merged_txt = merged_dir / f"{base}_merged.txt"
+    merged_json= merged_dir / f"{base}_merged.json"
 
     # TXT RAW
     with open(raw_txt, "w", encoding="utf-8") as f:
@@ -383,7 +418,7 @@ def process_one_file(input_path: Path, out_dir: Path, language, whisper_model, w
             ]
         }, f, ensure_ascii=False, indent=2)
 
-    # 7) przenieś oryginalny plik do processed_files i posprzątaj tmp
+    # 7) przenieś oryginalny plik do processed_files
     processed = input_path.parent / "processed_files"
     try:
         moved_to = safe_unique_move(input_path, processed)
@@ -391,8 +426,19 @@ def process_one_file(input_path: Path, out_dir: Path, language, whisper_model, w
     except Exception as e:
         print(f"UWAGA: nie przeniosłem oryginału do processed_files ({e}).")
 
-    # WYczyść cały temp
+    # 8) ZWOLNIJ UCHWYTY, usuń WAV i WYCZYŚĆ CAŁY folder tymczasowy
+    try:
+        # zwolnij ewentualne referencje, żeby na Windows nie trzymały uchwytów
+        whole = None
+        import gc
+        gc.collect()
+        if Path(wav_path).exists():
+            Path(wav_path).unlink()
+    except Exception:
+        pass
+
     cleanup_dir(work_dir)
+    print(f"[OK] Wyczyszczono katalog tymczasowy: {work_dir} (istnieje? {work_dir.exists()})")
 
     print(f"\nZapisano:\n - {raw_txt}\n - {merged_txt}\n - {raw_json}\n - {merged_json}\n")
 
