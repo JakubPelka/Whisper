@@ -1,17 +1,15 @@
 # -*- coding: utf-8 -*-
 """
 transcribe_diarize.py
-- Okna (tkinter): wybór pliku audio i folderu docelowego
-- Terminal: wybór języka (pl/en/sv/auto/other) i modelu Whisper
+- Okna (tkinter): wybór jednego lub wielu plików audio + wybór wspólnego folderu docelowego
+- Terminal: pytanie o tryb (Faster/More accurate), wybór języka (pl/en/sv/auto/other) i modelu Whisper
 - Token HF (pyannote 3.1) zapisany w skrypcie
 - Diarization: pyannote 3.1 (gated) z fallbackiem do legacy
 - Transkrypcja: Whisper (domyślnie large-v3)
-- Wyniki: TXT + JSON w folderze docelowym
-- Tworzy `arkiv` obok pliku źródłowego i przenosi tam .mp3/.m4a
-
-Wymagania:
-  pip install -U openai-whisper pyannote.audio pydub torch torchaudio
-  (ffmpeg w PATH dla pydub)
+- Wyniki dla każdego pliku: RAW i MERGED → 2×TXT + 2×JSON
+- Po przetworzeniu:
+    * czyści tymczasowy folder _tmp_diar (dla danego pliku),
+    * przenosi oryginalny plik do subfolderu processed_files/ obok źródła
 """
 
 import os
@@ -44,36 +42,50 @@ torch.backends.cudnn.allow_tf32 = True
 
 AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".aac", ".wma", ".ogg", ".flac", ".mkv", ".mp4", ".m4b"}
 
-# ---------------- GUI: wybór pliku i folderu ----------------
-def pick_file_and_folder():
+# --- domyślne parametry (modyfikowane przez preset Fast/Accurate) ---
+WHISPER_TEMPERATURE = 0.0
+WHISPER_BEAM_SIZE = 4
+WHISPER_BEST_OF = 4
+WHISPER_COND_PREV = False
+
+# --- parametry scalania (po transkrypcji) ---
+MERGE_ENABLED = True
+GAP_THRESHOLD = 0.8        # sekundy – maks przerwa między segmentami tego samego mówcy
+MAX_BLOCK_LEN = 180.0      # sekundy – maks długość jednego bloku po scaleniu
+MERGE_SHORTER_THAN = 0.5   # sekundy – mikro-wstawki łączymy zawsze z sąsiadem (gdy ten sam mówca)
+
+# ---------------- GUI: wybór wielu plików i folderu ----------------
+def pick_files_and_folder():
     try:
         import tkinter as tk
         from tkinter import filedialog, messagebox
         root = tk.Tk()
         root.withdraw()
-        messagebox.showinfo("Wybór pliku", "Wybierz plik audio do przetworzenia.")
-        fpath = filedialog.askopenfilename(
-            title="Wybierz plik audio",
+        messagebox.showinfo("Wybór plików", "Wybierz JEDEN lub WIELE plików audio do przetworzenia.")
+        fpaths = filedialog.askopenfilenames(
+            title="Wybierz plik(i) audio",
             filetypes=[
                 ("Audio", "*.wav *.mp3 *.m4a *.aac *.wma *.ogg *.flac *.mkv *.mp4 *.m4b"),
                 ("Wszystkie pliki", "*.*"),
             ],
         )
-        if not fpath:
-            raise RuntimeError("Anulowano wybór pliku.")
-        messagebox.showinfo("Folder wyjściowy", "Wybierz folder, gdzie zapisać transkrypcję.")
+        if not fpaths:
+            raise RuntimeError("Anulowano wybór plików.")
+        messagebox.showinfo("Folder wyjściowy", "Wybierz folder, gdzie zapisać transkrypcje.")
         outdir = filedialog.askdirectory(title="Wybierz folder docelowy")
         if not outdir:
-            outdir = str(Path(fpath).parent)
-        return Path(fpath), Path(outdir)
+            # jeśli nie wybrano, użyj folderu pierwszego pliku
+            outdir = str(Path(fpaths[0]).parent)
+        return [Path(p) for p in fpaths], Path(outdir)
     except Exception:
         # awaryjnie terminal (gdyby tkinter nie działał)
         print("Nie udało się użyć okienek (tkinter). Używam konsoli.")
-        fpath = input("Ścieżka do pliku audio: ").strip('" ')
-        outdir = input("Folder docelowy (ENTER = folder pliku): ").strip('" ')
-        if not outdir:
-            outdir = str(Path(fpath).parent)
-        return Path(fpath), Path(outdir)
+        raw = input("Podaj ścieżki do plików audio (oddzielone średnikiem ';'): ").strip()
+        paths = [Path(p.strip().strip('"')) for p in raw.split(";") if p.strip()]
+        outdir = input("Folder docelowy (ENTER = folder pierwszego pliku): ").strip('" ')
+        if not outdir and paths:
+            outdir = str(paths[0].parent)
+        return paths, Path(outdir)
 
 # ---------------- helpers ----------------
 def hhmmss(seconds: float) -> str:
@@ -102,8 +114,23 @@ def slice_segment(audio: AudioSegment, start_s: float, end_s: float) -> AudioSeg
         b = a + 1
     return audio[a:b]
 
+def choose_preset_term():
+    global WHISPER_BEAM_SIZE, WHISPER_BEST_OF
+    print("\nTryb pracy:")
+    print("  1) Faster         (beam_size=1, best_of=1)")
+    print("  2) More accurate  (beam_size=8, best_of=8)")
+    ch = input("Twój wybór [1-2] (ENTER=More accurate): ").strip()
+    if ch == "1":
+        WHISPER_BEAM_SIZE = 1
+        WHISPER_BEST_OF = 1
+        print("Preset: Faster")
+    else:
+        WHISPER_BEAM_SIZE = 8
+        WHISPER_BEST_OF = 8
+        print("Preset: More accurate")
+
 def choose_language_term():
-    print("\nWybierz język transkrypcji:")
+    print("\nWybierz język transkrykcji:")
     print("  1) pl  2) en  3) sv  4) auto-wykrywanie  5) other (podaj kod, np. 'de')")
     ch = input("Twój wybór [1-5] (ENTER=pl): ").strip()
     mapping = {"1":"pl","2":"en","3":"sv","4":None}
@@ -130,6 +157,29 @@ def choose_model_term():
     except Exception:
         pass
     return default
+
+def safe_unique_move(src: Path, dst_dir: Path):
+    """Przenieś src do dst_dir, unikając nadpisania: jeśli istnieje, dodaj sufiks (_1, _2, ...)."""
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    target = dst_dir / src.name
+    if not target.exists():
+        shutil.move(str(src), str(target))
+        return target
+    stem, suf = src.stem, src.suffix
+    i = 1
+    while True:
+        cand = dst_dir / f"{stem}_{i}{suf}"
+        if not cand.exists():
+            shutil.move(str(src), str(cand))
+            return cand
+        i += 1
+
+def cleanup_dir(path: Path):
+    try:
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+    except Exception:
+        pass
 
 def load_whisper(model_name: str):
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -178,8 +228,11 @@ def load_pyannote():
 
 def transcribe_segment(whisper_model, seg_path: Path, language):
     kwargs = dict(
-        temperature=0.0, beam_size=5, best_of=5,
-        condition_on_previous_text=False, fp16=torch.cuda.is_available()
+        temperature=WHISPER_TEMPERATURE,
+        beam_size=WHISPER_BEAM_SIZE,
+        best_of=WHISPER_BEST_OF,
+        condition_on_previous_text=WHISPER_COND_PREV,
+        fp16=torch.cuda.is_available()
     )
     if language:
         result = whisper_model.transcribe(str(seg_path), language=language, **kwargs)
@@ -187,7 +240,46 @@ def transcribe_segment(whisper_model, seg_path: Path, language):
         result = whisper_model.transcribe(str(seg_path), **kwargs)  # auto
     return result.get("text", "").strip()
 
-def process_one_file(input_path: Path, out_dir: Path, language, whisper_model_name):
+# --------- scalanie po transkrypcji ---------
+def _join_text(a: str, b: str) -> str:
+    a = (a or "").rstrip()
+    b = (b or "").lstrip()
+    if not a:
+        return b
+    if a.endswith((" ", "\n", "\t")):
+        return a + b
+    return a + " " + b
+
+def merge_segments(raw_segments, gap_thr=GAP_THRESHOLD, max_block=MAX_BLOCK_LEN, short_thr=MERGE_SHORTER_THAN):
+    """Łączy sąsiadujące segmenty tego samego mówcy, jeśli przerwa mała i nie przekraczamy limitu długości bloku."""
+    if not raw_segments:
+        return []
+
+    merged = []
+    cur = dict(raw_segments[0])  # copy
+    cur["text"] = cur.get("text", "")
+
+    def seg_len(seg): return float(seg["end"] - seg["start"])
+
+    for nxt in raw_segments[1:]:
+        same_spk = (str(nxt["speaker"]) == str(cur["speaker"]))
+        gap = float(nxt["start"] - cur["end"])
+        nxt_len = seg_len(nxt)
+        cur_len = seg_len(cur)
+        can_merge = same_spk and (gap <= gap_thr or cur_len < short_thr or nxt_len < short_thr) \
+                    and ((nxt["end"] - cur["start"]) <= max_block)
+        if can_merge:
+            cur["end"] = nxt["end"]
+            cur["text"] = _join_text(cur.get("text",""), nxt.get("text",""))
+        else:
+            merged.append(cur)
+            cur = dict(nxt)
+            cur["text"] = cur.get("text","")
+    merged.append(cur)
+    return merged
+
+# --------- przetwarzanie jednego pliku ---------
+def process_one_file(input_path: Path, out_dir: Path, language, whisper_model, whisper_name, pipeline, diar_id):
     assert input_path.exists(), f"Brak pliku: {input_path}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -197,12 +289,11 @@ def process_one_file(input_path: Path, out_dir: Path, language, whisper_model_na
     whole = AudioSegment.from_file(str(wav_path))
 
     # 2) diarization
-    pipeline, diar_id = load_pyannote()
     diar = pipeline(str(wav_path))
 
-    # 3) segmenty
+    # 3) segmenty (RAW time)
     MIN_SEG, MAX_SEG = 0.35, 120.0
-    segs = []
+    segs_time = []
     for turn, _, speaker in diar.itertracks(yield_label=True):
         s = float(turn.start); e = float(turn.end)
         if e - s < MIN_SEG:
@@ -212,99 +303,137 @@ def process_one_file(input_path: Path, out_dir: Path, language, whisper_model_na
             for i in range(n):
                 ss = s + i * MAX_SEG
                 ee = min(e, ss + MAX_SEG)
-                segs.append({"start": ss, "end": ee, "speaker": str(speaker)})
+                segs_time.append({"start": ss, "end": ee, "speaker": str(speaker)})
         else:
-            segs.append({"start": s, "end": e, "speaker": str(speaker)})
-    segs.sort(key=lambda x: x["start"])
+            segs_time.append({"start": s, "end": e, "speaker": str(speaker)})
+    segs_time.sort(key=lambda x: x["start"])
 
-    # 4) whisper
-    wmodel, used_name = load_whisper(whisper_model_name)
-
-    # 5) transkrypcja per segment
+    # 4) transkrypcja per segment (RAW tekst)
     seg_dir = work_dir / f"{input_path.stem}_segs"
     seg_dir.mkdir(exist_ok=True)
-    txt_lines, json_items = [], []
+    raw_segments = []
 
-    for i, seg in enumerate(segs, start=1):
+    for i, seg in enumerate(segs_time, start=1):
         s, e, spk = seg["start"], seg["end"], seg["speaker"]
         clip = slice_segment(whole, s, e)
         seg_path = seg_dir / f"{input_path.stem}_seg{i:04d}.wav"
         clip.export(str(seg_path), format="wav")
 
-        text = transcribe_segment(wmodel, seg_path, language)
-        line = f"[{hhmmss(s)}–{hhmmss(e)}] {spk}: {text}"
-        print(line)
-        txt_lines.append(line)
-        json_items.append({
+        text = transcribe_segment(whisper_model, seg_path, language)
+        raw_segments.append({
             "start": s, "end": e,
             "start_hhmmss": hhmmss(s), "end_hhmmss": hhmmss(e),
-            "speaker": spk,
-            "text": text
+            "speaker": spk, "text": text
         })
+        print(f"[{hhmmss(s)}–{hhmmss(e)}] {spk}: {text}")
 
-    # 6) zapisy
+    # 5) scalanie (MERGED)
+    merged_segments = merge_segments(raw_segments) if MERGE_ENABLED else list(raw_segments)
+
+    # 6) zapisy RAW & MERGED
     base = input_path.stem
-    out_txt = out_dir / f"{base}_transcription.txt"
-    out_json = out_dir / f"{base}_transcription.json"
-    with open(out_txt, "w", encoding="utf-8") as f:
-        f.write("\n".join(txt_lines))
-    with open(out_json, "w", encoding="utf-8") as f:
+    raw_txt    = out_dir / f"{base}_raw.txt"
+    merged_txt = out_dir / f"{base}_merged.txt"
+    raw_json   = out_dir / f"{base}_raw.json"
+    merged_json= out_dir / f"{base}_merged.json"
+
+    # TXT RAW
+    with open(raw_txt, "w", encoding="utf-8") as f:
+        for seg in raw_segments:
+            f.write(f"[{seg['start_hhmmss']}–{seg['end_hhmmss']}] {seg['speaker']}: {seg['text']}\n")
+
+    # TXT MERGED
+    with open(merged_txt, "w", encoding="utf-8") as f:
+        for seg in merged_segments:
+            f.write(f"[{hhmmss(seg['start'])}–{hhmmss(seg['end'])}] {seg['speaker']}: {seg['text']}\n")
+
+    # JSON RAW
+    with open(raw_json, "w", encoding="utf-8") as f:
         json.dump({
             "file": str(input_path),
             "output_dir": str(out_dir),
             "language": language or "auto",
-            "whisper_model": used_name,
+            "whisper_model": whisper_name,
             "diarization_model": diar_id,
-            "segments": json_items
+            "segments": raw_segments
         }, f, ensure_ascii=False, indent=2)
 
-    # 7) arkiv + sprzątanie
-    arkiv = input_path.parent / "arkiv"
-    arkiv.mkdir(exist_ok=True)
-    if input_path.suffix.lower() in {".mp3", ".m4a"}:
-        try:
-            shutil.move(str(input_path), str(arkiv / input_path.name))
-            print(f"Przeniesiono do arkiv: {input_path.name}")
-        except Exception as e:
-            print(f"UWAGA: nie przeniosłem do arkiv ({e}).")
+    # JSON MERGED
+    with open(merged_json, "w", encoding="utf-8") as f:
+        json.dump({
+            "file": str(input_path),
+            "output_dir": str(out_dir),
+            "language": language or "auto",
+            "whisper_model": whisper_name,
+            "diarization_model": diar_id,
+            "merge_params": {
+                "gap_threshold_sec": GAP_THRESHOLD,
+                "max_block_len_sec": MAX_BLOCK_LEN,
+                "merge_shorter_than_sec": MERGE_SHORTER_THAN
+            },
+            "segments": [
+                {
+                    "start": seg["start"],
+                    "end": seg["end"],
+                    "start_hhmmss": hhmmss(seg["start"]),
+                    "end_hhmmss": hhmmss(seg["end"]),
+                    "speaker": seg["speaker"],
+                    "text": seg["text"],
+                } for seg in merged_segments
+            ]
+        }, f, ensure_ascii=False, indent=2)
 
+    # 7) przenieś oryginalny plik do processed_files i posprzątaj tmp
+    processed = input_path.parent / "processed_files"
     try:
-        for p in seg_dir.glob("*.wav"):
-            p.unlink(missing_ok=True)
-        # (work_dir).rmdir()  # odkomentuj, jeśli chcesz usuwać katalog tymczasowy
-    except Exception:
-        pass
+        moved_to = safe_unique_move(input_path, processed)
+        print(f"Przeniesiono oryginał do: {moved_to}")
+    except Exception as e:
+        print(f"UWAGA: nie przeniosłem oryginału do processed_files ({e}).")
 
-    print(f"\nZapisano:\n - {out_txt}\n - {out_json}\n")
+    # WYczyść cały temp
+    cleanup_dir(work_dir)
+
+    print(f"\nZapisano:\n - {raw_txt}\n - {merged_txt}\n - {raw_json}\n - {merged_json}\n")
 
 # ---------------- main ----------------
 def main():
     print("=" * 70)
-    print(" DIARIZATION + WHISPER TRANSCRIPTION")
+    print(" DIARIZATION + WHISPER TRANSCRIPTION — batch")
     print("=" * 70)
 
-    # plik + folder przez okna
-    in_path, out_dir = pick_file_and_folder()
-
-    if not in_path.exists():
-        print(f"ERROR: Nie ma pliku: {in_path}")
-        sys.exit(2)
-    if in_path.suffix.lower() not in AUDIO_EXTS:
-        print(f"ERROR: Nieobsługiwane rozszerzenie: {in_path.suffix}")
+    # pliki + wspólny folder przez okna
+    in_paths, out_dir = pick_files_and_folder()
+    in_paths = [p for p in in_paths if p.exists() and p.is_file() and p.suffix.lower() in AUDIO_EXTS]
+    if not in_paths:
+        print("ERROR: Brak poprawnych plików wejściowych.")
         sys.exit(2)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # język + model w terminalu
+    # preset, język, model
+    choose_preset_term()
     language = choose_language_term()
-    wmodel = choose_model_term()
+    whisper_model_name = choose_model_term()
 
-    print("\nStart...")
-    print("-" * 70)
+    # Załaduj modele (raz na batch)
     try:
-        process_one_file(in_path, out_dir, language, wmodel)
+        whisper_model, whisper_name = load_whisper(whisper_model_name)
+        pipeline, diar_id = load_pyannote()
     except Exception as e:
-        print(f"!! Błąd: {e}")
+        print(f"!! Błąd podczas ładowania modeli: {e}")
         sys.exit(1)
+
+    # Przetwarzaj po kolei
+    for idx, in_path in enumerate(in_paths, start=1):
+        print("\n" + "-" * 70)
+        print(f"Plik {idx}/{len(in_paths)}: {in_path.name}")
+        print("-" * 70)
+        try:
+            process_one_file(in_path, out_dir, language, whisper_model, whisper_name, pipeline, diar_id)
+        except Exception as e:
+            print(f"!! Błąd dla {in_path.name}: {e}")
+
+    print("\n*** Zakończono batch ***")
 
 if __name__ == "__main__":
     main()
