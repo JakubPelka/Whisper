@@ -23,9 +23,23 @@ import warnings
 from pathlib import Path
 from datetime import timedelta
 
-# --- TOKEN HF w skrypcie (pyannote 3.1) ---
-TOKEN_IN_SCRIPT = "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"
-os.environ["HUGGINGFACE_TOKEN"] = TOKEN_IN_SCRIPT
+# --- TOKEN HF przez zmienną środowiskową ---
+# Nie zapisuj tokenu Hugging Face w repo ani bezpośrednio w kodzie.
+# Przed uruchomieniem ustaw:
+#   export HF_TOKEN="hf_..."
+# albo:
+#   export HUGGINGFACE_TOKEN="hf_..."
+
+TOKEN_IN_SCRIPT = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN") or ""
+
+if TOKEN_IN_SCRIPT:
+    os.environ["HUGGINGFACE_TOKEN"] = TOKEN_IN_SCRIPT
+else:
+    print(
+        "UWAGA: Brak tokenu Hugging Face. "
+        "Diarization pyannote może nie zadziałać. "
+        "Ustaw HF_TOKEN albo HUGGINGFACE_TOKEN przed uruchomieniem."
+    )
 
 # --- wyciszenie zbędnych logów/ostrzeżeń ---
 logging.getLogger().setLevel(logging.WARNING)
