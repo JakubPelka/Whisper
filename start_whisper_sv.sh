@@ -36,7 +36,8 @@ fi
 
 source "$VENV_DIR/bin/activate"
 
-python -m pip install --upgrade pip setuptools wheel
+python -m pip install --upgrade pip wheel
+python -m pip install --upgrade "setuptools<82"
 
 if [[ "$UPDATE_DEPS" == "1" ]]; then
   echo "Installing/updating Whisper stack..."

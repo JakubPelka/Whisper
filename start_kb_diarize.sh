@@ -40,7 +40,8 @@ fi
 
 source "$VENV_DIR/bin/activate"
 
-python -m pip install --upgrade pip setuptools wheel
+python -m pip install --upgrade pip wheel
+python -m pip install --upgrade "setuptools<82"
 python -m pip install --upgrade torch torchaudio transformers accelerate safetensors soundfile librosa sentencepiece pyannote.audio
 
 echo ""

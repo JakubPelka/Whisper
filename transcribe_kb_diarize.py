@@ -90,6 +90,37 @@ def cut_wav_segment(wav_path, out_path, start_s, end_s):
     ])
 
 
+
+def iter_diarization_tracks(diar_result):
+    """
+    Compatibility helper for pyannote outputs.
+
+    Older pyannote versions return an Annotation directly.
+    Newer pyannote pipelines may return a DiarizeOutput object
+    with the actual Annotation stored in .speaker_diarization.
+    """
+    ann = None
+
+    if hasattr(diar_result, "itertracks"):
+        ann = diar_result
+    elif hasattr(diar_result, "speaker_diarization"):
+        ann = diar_result.speaker_diarization
+    elif isinstance(diar_result, dict):
+        for key in ("speaker_diarization", "diarization", "annotation"):
+            if key in diar_result:
+                ann = diar_result[key]
+                break
+
+    if ann is None or not hasattr(ann, "itertracks"):
+        attrs = [a for a in dir(diar_result) if not a.startswith("_")]
+        raise RuntimeError(
+            f"Unsupported pyannote diarization output: {type(diar_result)}; "
+            f"available attributes={attrs}"
+        )
+
+    return ann.itertracks(yield_label=True)
+
+
 def split_long_segment(start, end, speaker, max_len):
     length = end - start
     if length <= max_len:
@@ -329,7 +360,7 @@ def main():
             torch.cuda.empty_cache()
 
         diar_segments = []
-        for turn, _, speaker in diarization.itertracks(yield_label=True):
+        for turn, _, speaker in iter_diarization_tracks(diarization):
             s = float(turn.start)
             e = float(turn.end)
             if e - s < MIN_SEG:

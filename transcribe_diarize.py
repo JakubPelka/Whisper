@@ -318,6 +318,36 @@ def merge_segments(raw_segments, gap_thr=GAP_THRESHOLD, max_block=MAX_BLOCK_LEN,
     merged.append(cur)
     return merged
 
+
+def iter_diarization_tracks(diar_result):
+    """
+    Compatibility helper for pyannote outputs.
+
+    Older pyannote versions return an Annotation directly.
+    Newer pyannote pipelines may return a DiarizeOutput object
+    with the actual Annotation stored in .speaker_diarization.
+    """
+    ann = None
+
+    if hasattr(diar_result, "itertracks"):
+        ann = diar_result
+    elif hasattr(diar_result, "speaker_diarization"):
+        ann = diar_result.speaker_diarization
+    elif isinstance(diar_result, dict):
+        for key in ("speaker_diarization", "diarization", "annotation"):
+            if key in diar_result:
+                ann = diar_result[key]
+                break
+
+    if ann is None or not hasattr(ann, "itertracks"):
+        attrs = [a for a in dir(diar_result) if not a.startswith("_")]
+        raise RuntimeError(
+            f"Unsupported pyannote diarization output: {type(diar_result)}; "
+            f"available attributes={attrs}"
+        )
+
+    return ann.itertracks(yield_label=True)
+
 # --------- przetwarzanie jednego pliku ---------
 def process_one_file(input_path: Path, out_dir: Path, language, whisper_model, whisper_name, pipeline, diar_id):
     assert input_path.exists(), f"Brak pliku: {input_path}"
@@ -341,7 +371,7 @@ def process_one_file(input_path: Path, out_dir: Path, language, whisper_model, w
     # 3) segmenty (RAW time)
     MIN_SEG, MAX_SEG = 0.35, 120.0
     segs_time = []
-    for turn, _, speaker in diar.itertracks(yield_label=True):
+    for turn, _, speaker in iter_diarization_tracks(diar):
         s = float(turn.start); e = float(turn.end)
         if e - s < MIN_SEG:
             continue
