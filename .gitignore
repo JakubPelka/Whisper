@@ -1,0 +1,28 @@
+
+# Local environments
+.venv/
+.venv_kb_whisper/
+__pycache__/
+*.pyc
+
+# Local model/cache files
+cache/
+.cache/
+models/
+
+# Audio/input/output data
+*.m4a
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.aac
+*.wma
+*.m4b
+processed_files/
+kb_whisper_tests/
+transcriptions/
+transkrypcje/
+
+# Backups
+*.bak*
