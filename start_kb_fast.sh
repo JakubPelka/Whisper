@@ -6,38 +6,16 @@ cd /home/jakub-pelka/GitHub/Whisper || exit 1
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 VENV_DIR="${VENV_DIR:-.venv_kb_whisper}"
 
-TOKEN_FILE="${TOKEN_FILE:-/home/jakub-pelka/GitHub/Whisper/secrets/token.txt}"
-
 DEFAULT_INPUT="/home/jakub-pelka/MobileTransfer/Recordings/Violett guldvinge.m4a"
 DEFAULT_OUT_DIR="/home/jakub-pelka/MobileTransfer/Recordings/kb_whisper_tests"
 
 KB_WHISPER_MODEL="${KB_WHISPER_MODEL:-KBLab/kb-whisper-large}"
 KB_WHISPER_REVISION="${KB_WHISPER_REVISION:-standard}"
-PYANNOTE_MODEL="${PYANNOTE_MODEL:-pyannote/speaker-diarization-3.1}"
+INSTALL_DEPS="${INSTALL_DEPS:-0}"
 
-# Default: pyannote on CPU, KB-Whisper on GPU.
-# This saves VRAM on RTX 2070 8 GB.
-DIAR_DEVICE="${DIAR_DEVICE:-cpu}"
-
-# --- Load Hugging Face token ---
-if [[ -z "${HF_TOKEN:-}" && -z "${HUGGINGFACE_TOKEN:-}" ]]; then
-  if [[ -f "$TOKEN_FILE" ]]; then
-    HF_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
-    export HF_TOKEN
-    export HUGGINGFACE_TOKEN="$HF_TOKEN"
-    echo "HF token loaded from: $TOKEN_FILE"
-  else
-    echo "ERROR: HF_TOKEN/HUGGINGFACE_TOKEN is not set and token file was not found."
-    echo "Expected token file:"
-    echo "  $TOKEN_FILE"
-    exit 1
-  fi
-fi
-
-# --- Ask for input file unless INPUT_FILE was provided ---
 if [[ -z "${INPUT_FILE:-}" ]]; then
   echo ""
-  echo "Podaj ścieżkę pliku audio/wideo do przetworzenia."
+  echo "Podaj ścieżkę pliku audio/wideo do transkrypcji."
   echo "ENTER = domyślny test:"
   echo "  $DEFAULT_INPUT"
   echo ""
@@ -45,7 +23,6 @@ if [[ -z "${INPUT_FILE:-}" ]]; then
   INPUT_FILE="${INPUT_FILE:-$DEFAULT_INPUT}"
 fi
 
-# Remove simple surrounding quotes if pasted from file manager
 INPUT_FILE="${INPUT_FILE%\"}"
 INPUT_FILE="${INPUT_FILE#\"}"
 INPUT_FILE="${INPUT_FILE%\'}"
@@ -57,7 +34,6 @@ if [[ ! -f "$INPUT_FILE" ]]; then
   exit 2
 fi
 
-# --- Ask for output folder unless OUT_DIR was provided ---
 if [[ -z "${OUT_DIR:-}" ]]; then
   echo ""
   echo "Podaj folder wynikowy."
@@ -85,29 +61,32 @@ fi
 if [[ ! -d "$VENV_DIR" ]]; then
   echo "Creating venv: $VENV_DIR"
   "$PYTHON_BIN" -m venv "$VENV_DIR"
+  INSTALL_DEPS=1
 fi
 
 source "$VENV_DIR/bin/activate"
 
-python -m pip install --upgrade pip wheel
-python -m pip install --upgrade "setuptools<82"
-python -m pip install --upgrade torch torchaudio transformers accelerate safetensors soundfile librosa sentencepiece pyannote.audio
+if [[ "$INSTALL_DEPS" == "1" ]]; then
+  python -m pip install --upgrade pip wheel
+  python -m pip install --upgrade "setuptools<82"
+  python -m pip install --upgrade torch torchaudio transformers accelerate safetensors soundfile librosa sentencepiece
+else
+  echo "Skipping dependency install/update. Set INSTALL_DEPS=1 if needed."
+fi
 
 echo ""
-echo "KB-Whisper + pyannote diarization"
-echo "Input:        $INPUT_FILE"
-echo "Out dir:      $OUT_DIR"
-echo "ASR model:    $KB_WHISPER_MODEL"
-echo "ASR revision: $KB_WHISPER_REVISION"
-echo "Diar model:   $PYANNOTE_MODEL"
-echo "Diar device:  $DIAR_DEVICE"
+echo "KB-Whisper fast transcription — no diarization"
+echo "Input:    $INPUT_FILE"
+echo "Out dir:  $OUT_DIR"
+echo "Model:    $KB_WHISPER_MODEL"
+echo "Revision: $KB_WHISPER_REVISION"
 echo ""
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-python transcribe_kb_diarize.py \
+python transcribe_kb_whisper.py \
   --input "$INPUT_FILE" \
   --outdir "$OUT_DIR" \
   --model "$KB_WHISPER_MODEL" \
   --revision "$KB_WHISPER_REVISION" \
-  --diar-model "$PYANNOTE_MODEL" \
-  --diar-device "$DIAR_DEVICE"
+  --chunk-length 30 \
+  --batch-size 1
