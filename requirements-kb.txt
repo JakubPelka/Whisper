@@ -1,5 +1,6 @@
+# KB-Whisper backend. No pyannote, no diarization, no HF token required.
+# torchaudio is intentionally not listed; this script does not import it.
 torch
-torchaudio
 transformers
 accelerate
 safetensors

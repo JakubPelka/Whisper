@@ -28,3 +28,4 @@ transkrypcje/
 *.bak*
 /secrets
 /.venv_kb
+/outputs

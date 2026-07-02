@@ -85,21 +85,19 @@ def load_asr(model_id: str, revision: str, force_cpu: bool):
     print(f"Device:                  {device}")
     print(f"Torch dtype:             {torch_dtype}")
 
-    token = (
-        os.environ.get("HF_TOKEN")
-        or os.environ.get("HUGGINGFACE_TOKEN")
-        or os.environ.get("HUGGINGFACE_HUB_TOKEN")
-        or None
-    )
+    # KB-Whisper is public in the normal workflow.
+    # Do not auto-use HF_TOKEN/HUGGINGFACE_TOKEN from the shell, because a stale
+    # or malformed token can break public model downloads with HTTP header errors.
+    hf_token = False
 
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
         model_id,
         revision=revision,
-        torch_dtype=torch_dtype,
+        dtype=torch_dtype,
         use_safetensors=True,
         cache_dir="cache",
         low_cpu_mem_usage=True,
-        token=token,
+        token=hf_token,
     )
     model.to(device)
 
@@ -107,7 +105,7 @@ def load_asr(model_id: str, revision: str, force_cpu: bool):
         model_id,
         revision=revision,
         cache_dir="cache",
-        token=token,
+        token=hf_token,
     )
 
     asr = pipeline(
@@ -115,7 +113,7 @@ def load_asr(model_id: str, revision: str, force_cpu: bool):
         model=model,
         tokenizer=processor.tokenizer,
         feature_extractor=processor.feature_extractor,
-        torch_dtype=torch_dtype,
+        dtype=torch_dtype,
         device=device,
     )
 

@@ -5,7 +5,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR" || exit 1
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-TOKEN_FILE="${TOKEN_FILE:-$ROOT_DIR/secrets/token.txt}"
 INSTALL_DEPS="${INSTALL_DEPS:-auto}"
 AUDIO_FIND_MAXDEPTH="${AUDIO_FIND_MAXDEPTH:-1}"
 
@@ -29,21 +28,6 @@ clean_prompt_path() {
   printf '%s' "$value"
 }
 
-load_hf_token() {
-  if [[ -z "${HF_TOKEN:-}" && -z "${HUGGINGFACE_TOKEN:-}" && -z "${HUGGINGFACE_HUB_TOKEN:-}" ]]; then
-    if [[ -f "$TOKEN_FILE" ]]; then
-      HF_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
-      export HF_TOKEN
-      export HUGGINGFACE_TOKEN="$HF_TOKEN"
-      export HUGGINGFACE_HUB_TOKEN="$HF_TOKEN"
-      echo "HF token loaded from: $TOKEN_FILE"
-    else
-      echo "HF token file not found. Continuing without token:"
-      echo "  $TOKEN_FILE"
-      echo "Note: public KB/OpenAI Whisper models may still work without it."
-    fi
-  fi
-}
 
 add_input_file() {
   local file_path
@@ -59,16 +43,21 @@ add_input_file() {
   INPUT_PATHS+=("$file_path")
 }
 
-add_input_files_from_semicolon_list() {
+add_input_files_from_list() {
   local raw="$1"
   local item
-  IFS=';' read -ra items <<< "$raw"
-  for item in "${items[@]}"; do
+
+  # Accepted formats:
+  #   /path/a.m4a;/path/b.m4a
+  #   /path/a.m4a
+  #   /path/b.m4a
+  # This makes the launcher compatible with a universal Copy Path tool.
+  while IFS= read -r item; do
     item="$(clean_prompt_path "$item")"
     if [[ -n "$item" ]]; then
       add_input_file "$item"
     fi
-  done
+  done < <(printf '%s\n' "$raw" | tr ';' '\n')
 }
 
 add_input_dir() {
@@ -105,7 +94,7 @@ ask_input_scope() {
   fi
 
   if [[ -n "${INPUT_FILES:-}" ]]; then
-    add_input_files_from_semicolon_list "$INPUT_FILES"
+    add_input_files_from_list "$INPUT_FILES"
     return 0
   fi
 
@@ -123,6 +112,7 @@ ask_input_scope() {
   echo "Tryb bez pytań też jest możliwy:"
   echo "  INPUT_FILE=/path/file.m4a ./scripts/start.sh"
   echo "  INPUT_FILES='/path/a.m4a;/path/b.m4a' ./scripts/start.sh"
+  echo '  INPUT_FILES="$(wl-paste)" ./scripts/start.sh'
   echo "  INPUT_DIR=/path/folder ./scripts/start.sh"
   echo ""
   read -p "Tryb [1-3] (ENTER=1): " INPUT_MODE
@@ -140,12 +130,13 @@ ask_input_scope() {
     2)
       echo "Podaj ścieżki oddzielone średnikiem ;"
       echo "Przykład: /dane/a.m4a;/dane/b.m4a"
+      echo "Dla ścieżek jedna-pod-drugiej z Copy Path użyj: INPUT_FILES="$(wl-paste)" ./scripts/start.sh"
       read -e -p "Pliki wejściowe: " INPUT_FILES
       if [[ -z "$INPUT_FILES" ]]; then
         echo "ERROR: nie podano plików wejściowych."
         exit 2
       fi
-      add_input_files_from_semicolon_list "$INPUT_FILES"
+      add_input_files_from_list "$INPUT_FILES"
       ;;
     3)
       read -e -p "Folder wejściowy: " INPUT_DIR
@@ -361,8 +352,9 @@ run_kb() {
   printf '  %s\n' "${INPUT_PATHS[@]}"
   echo ""
 
-  PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  python src/transcribe_kb.py \
+  env -u HF_TOKEN -u HUGGINGFACE_TOKEN -u HUGGINGFACE_HUB_TOKEN \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    python src/transcribe_kb.py \
     --input "${INPUT_PATHS[@]}" \
     --outdir "$OUT_DIR" \
     --model "$KB_WHISPER_MODEL" \
@@ -386,8 +378,9 @@ run_whisper() {
   printf '  %s\n' "${INPUT_PATHS[@]}"
   echo ""
 
-  PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-  python src/transcribe_whisper.py \
+  env -u HF_TOKEN -u HUGGINGFACE_TOKEN -u HUGGINGFACE_HUB_TOKEN \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    python src/transcribe_whisper.py \
     --input "${INPUT_PATHS[@]}" \
     --outdir "$OUT_DIR" \
     --language "$LANGUAGE" \
@@ -402,7 +395,6 @@ main() {
   echo "- inne języki / auto → OpenAI Whisper"
   echo "- diarization/pyannote: wyłączone"
 
-  load_hf_token
   ensure_base_tools
   ask_input_scope
   ask_language_and_engine

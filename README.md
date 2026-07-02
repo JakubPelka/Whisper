@@ -1,7 +1,7 @@
 # Whisper
 
 **Status:** ACTIVE / LOCAL TOOLING  
-**Purpose:** local audio transcription with a clean split between Swedish KB-Whisper and general OpenAI Whisper.
+**Purpose:** local audio transcription with one launcher and two clean backends.
 
 This repository is a small local transcription toolkit. It is not a backup folder and should not contain audio recordings, generated outputs, model caches or secrets.
 
@@ -17,7 +17,7 @@ The launcher asks for:
 
 1. what to analyse:
    - one file,
-   - several files separated with `;`,
+   - several files,
    - a whole folder,
 2. recording language,
 3. output folder,
@@ -31,7 +31,7 @@ other languages   -> OpenAI Whisper
 auto detection    -> OpenAI Whisper
 ```
 
-Diarization / speaker separation is intentionally removed from the normal workflow. It was too slow and too GPU-heavy for this repo's current practical use.
+Diarization / speaker separation is intentionally removed from the normal workflow.
 
 ## Repository structure
 
@@ -43,18 +43,32 @@ Whisper/
 ├── requirements-whisper.txt
 ├── scripts/
 │   └── start.sh
-├── src/
-│   ├── transcribe_kb.py
-│   └── transcribe_whisper.py
-└── secrets/
-    └── README.md
+└── src/
+    ├── transcribe_kb.py
+    └── transcribe_whisper.py
 ```
 
-Local-only file, not committed:
+Local-only files and folders, not committed:
 
 ```text
-secrets/token.txt
+outputs/
+cache/
+.venv_kb/
+.venv_whisper/
+secrets/token.txt   # optional old/local file; not used by normal workflow
 ```
+
+## Important v6 change: no token in normal workflow
+
+The normal workflow does **not** load or use Hugging Face tokens.
+
+```text
+KB-Whisper     -> no token
+OpenAI Whisper -> no token
+pyannote       -> removed
+```
+
+This avoids failures caused by stale, malformed or accidentally exported local tokens.
 
 ## Backend choice
 
@@ -109,11 +123,17 @@ Then choose:
 
 ```text
 1) one file
-2) several files separated with ;
+2) several files
 3) whole folder
 ```
 
-If you choose Swedish, the launcher uses KB-Whisper. If you choose another language, it uses OpenAI Whisper.
+For several files you can use either:
+
+```text
+/path/a.m4a;/path/b.m4a
+```
+
+or paste paths copied one-per-line with a universal Copy Path tool.
 
 ## Non-interactive examples
 
@@ -123,10 +143,16 @@ One Swedish file:
 INPUT_FILE="/path/to/audio.m4a" LANGUAGE=sv ./scripts/start.sh
 ```
 
-Several Swedish files:
+Several Swedish files, semicolon format:
 
 ```bash
 INPUT_FILES="/path/a.m4a;/path/b.m4a" LANGUAGE=sv ./scripts/start.sh
+```
+
+Several files from clipboard, one path per line:
+
+```bash
+INPUT_FILES="$(wl-paste)" LANGUAGE=sv ./scripts/start.sh
 ```
 
 Whole folder, Swedish, with medium KB model:
@@ -171,30 +197,6 @@ Each processed file produces:
 
 The `.txt` file contains the transcription text. The `.json` file keeps metadata and raw model output for later debugging.
 
-## Secrets and token file
-
-The repo expects a local token file here if a Hugging Face token is needed:
-
-```text
-secrets/token.txt
-```
-
-The file is ignored by Git and must not be committed.
-
-Set permissions locally:
-
-```bash
-chmod 600 secrets/token.txt
-```
-
-Check that Git ignores it:
-
-```bash
-git check-ignore -v secrets/token.txt
-```
-
-Current clean workflows do not use pyannote. KB-Whisper may still benefit from a Hugging Face token in some situations, so the launcher loads the token into the environment if the file exists.
-
 ## Requirements
 
 System packages:
@@ -220,12 +222,14 @@ The launcher creates local virtual environments as needed:
 
 They are ignored by Git.
 
+First run can download large Python/CUDA packages and the KB model file. That is expected. Later runs reuse the local virtual environment and model cache.
+
 ## GPU notes
 
 The practical default for the local RTX 2070 8 GB setup is:
 
 ```text
-Swedish:        KB-Whisper large
+Swedish:         KB-Whisper large
 Other languages: OpenAI Whisper large-v3-turbo, fast preset
 ```
 
@@ -250,9 +254,10 @@ pyannote diarization
 speaker separation
 per-speaker segment slicing
 moving source audio to processed_files/
+HF token loading
 ```
 
-Reason: these paths were slow, GPU-heavy and fragile compared with plain transcription.
+Reason: these paths were slow, GPU-heavy, fragile or unnecessary compared with plain transcription.
 
 ## Recommended cleanup after applying this structure
 
@@ -268,11 +273,18 @@ rm -f start_kb_diarize.sh
 rm -f start_whisper_sv.sh
 ```
 
+If `secrets/README.md` was tracked earlier, remove it from Git, but do not delete your local token file unless you really want to:
+
+```bash
+git rm -f secrets/README.md 2>/dev/null || true
+```
+
 Then commit only clean source/config files:
 
 ```bash
-git add README.md .gitignore requirements-kb.txt requirements-whisper.txt scripts src secrets/README.md docs/REPLACE_INSTRUCTIONS.md
-git commit -m "Simplify transcription launcher"
+git add README.md .gitignore requirements-kb.txt requirements-whisper.txt scripts src docs/REPLACE_INSTRUCTIONS.md
+git add -u
+git commit -m "Remove token loading from transcription workflow"
 ```
 
 Do not run `git add .` unless you checked `git status --short` carefully.
