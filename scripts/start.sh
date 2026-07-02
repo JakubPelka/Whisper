@@ -130,7 +130,7 @@ ask_input_scope() {
     2)
       echo "Podaj ścieżki oddzielone średnikiem ;"
       echo "Przykład: /dane/a.m4a;/dane/b.m4a"
-      echo "Dla ścieżek jedna-pod-drugiej z Copy Path użyj: INPUT_FILES="$(wl-paste)" ./scripts/start.sh"
+      echo 'Dla ścieżek jedna-pod-drugiej z Copy Path użyj: INPUT_FILES="$(wl-paste)" ./scripts/start.sh'
       read -e -p "Pliki wejściowe: " INPUT_FILES
       if [[ -z "$INPUT_FILES" ]]; then
         echo "ERROR: nie podano plików wejściowych."
@@ -194,18 +194,51 @@ ask_language_and_engine() {
   fi
 }
 
+default_output_dir() {
+  # Default output is kept next to the source recording, not inside the repo.
+  # Single file:   /path/recording.m4a -> /path/output_transkrypcja
+  # Folder mode:   /path/folder        -> /path/folder/output_transkrypcja
+  # Many files:    common parent folder of selected files -> output_transkrypcja
+  if [[ -n "${INPUT_DIR:-}" ]]; then
+    local dir_path
+    dir_path="$(clean_prompt_path "$INPUT_DIR")"
+    if [[ -d "$dir_path" ]]; then
+      echo "$(cd "$dir_path" && pwd -P)/output_transkrypcja"
+      return 0
+    fi
+  fi
+
+  python3 - "${INPUT_PATHS[@]}" <<'PY_DEFAULT_OUT'
+import os
+import sys
+
+paths = [os.path.abspath(p) for p in sys.argv[1:]]
+if not paths:
+    print(os.path.join(os.getcwd(), "output_transkrypcja"))
+    raise SystemExit
+
+parents = [os.path.dirname(p) for p in paths]
+try:
+    base = os.path.commonpath(parents)
+except ValueError:
+    base = parents[0]
+
+# If the common path collapses to the filesystem root, use first file parent instead.
+if base == os.path.abspath(os.sep):
+    base = parents[0]
+
+print(os.path.join(base, "output_transkrypcja"))
+PY_DEFAULT_OUT
+}
+
 ask_output_dir() {
   local default_out
-  if [[ "$ENGINE" == "kb" ]]; then
-    default_out="$ROOT_DIR/outputs/kb"
-  else
-    default_out="$ROOT_DIR/outputs/whisper"
-  fi
+  default_out="$(default_output_dir)"
 
   if [[ -z "$OUT_DIR" ]]; then
     echo ""
     echo "Podaj folder wynikowy."
-    echo "ENTER = lokalny folder wynikowy w repo, ignorowany przez Git:"
+    echo "ENTER = folder output_transkrypcja obok nagrania / folderu wejściowego:"
     echo "  $default_out"
     echo ""
     read -e -p "Folder wynikowy: " OUT_DIR

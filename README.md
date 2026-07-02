@@ -20,7 +20,7 @@ The launcher asks for:
    - several files,
    - a whole folder,
 2. recording language,
-3. output folder,
+3. output folder (ENTER = `output_transkrypcja` next to the source recording/folder),
 4. model options.
 
 Routing is automatic:
@@ -51,12 +51,34 @@ Whisper/
 Local-only files and folders, not committed:
 
 ```text
-outputs/
-cache/              # local model cache, ignored by Git
+output_transkrypcja/ # default output folder next to input recordings/folders
+cache/               # local model cache, ignored by Git
 .venv_kb/
 .venv_whisper/
-secrets/token.txt   # optional old/local file; not used by normal workflow
+secrets/token.txt    # optional old/local file; not used by normal workflow
 ```
+
+## Important v9 change: default output next to source recordings
+
+By default, transcription results are no longer stored in the repository. Pressing ENTER at the output-folder prompt creates:
+
+```text
+/path/to/recording-folder/output_transkrypcja/
+```
+
+Examples:
+
+```text
+/home/jakub-pelka/MobileTransfer/Recordings/Violett guldvinge.m4a
+-> /home/jakub-pelka/MobileTransfer/Recordings/output_transkrypcja/
+```
+
+```text
+INPUT_DIR=/home/jakub-pelka/MobileTransfer/Recordings
+-> /home/jakub-pelka/MobileTransfer/Recordings/output_transkrypcja/
+```
+
+This keeps generated work products with the source material and avoids filling the Git repository with outputs.
 
 ## Important v8 change: stable local model cache
 
@@ -207,12 +229,13 @@ AUDIO_FIND_MAXDEPTH=2 INPUT_DIR="/path/to/folder" LANGUAGE=sv ./scripts/start.sh
 
 ## Outputs
 
-Default output folders:
+Default output folder:
 
 ```text
-outputs/kb/
-outputs/whisper/
+output_transkrypcja/
 ```
+
+The folder is created next to the source recording or selected input folder. You can still override it with `OUT_DIR=/custom/path` or by entering a custom folder in the prompt.
 
 Each processed file produces:
 

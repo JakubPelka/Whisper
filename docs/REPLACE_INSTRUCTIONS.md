@@ -1,11 +1,11 @@
-# Replace instructions for v8
+# Replace instructions for v9
 
 Run from the local repository root:
 
 ```bash
 cd /home/jakub-pelka/GitHub/Whisper || exit 1
 
-BACKUP_DIR="_backup_before_v8_cache_$(date +%Y%m%d_%H%M%S)"
+BACKUP_DIR="_backup_before_v9_output_next_to_source_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$BACKUP_DIR"
 cp -a *.py *.sh README.md .gitignore requirements*.txt scripts src docs secrets/README.md "$BACKUP_DIR" 2>/dev/null || true
 ```
@@ -13,10 +13,10 @@ cp -a *.py *.sh README.md .gitignore requirements*.txt scripts src docs secrets/
 Unpack the ZIP somewhere temporary and sync it into the repo:
 
 ```bash
-rm -rf /tmp/whisper_v8
-mkdir -p /tmp/whisper_v8
-unzip -o ~/Downloads/Whisper_clean_restructure_v8.zip -d /tmp/whisper_v8
-rsync -av /tmp/whisper_v8/Whisper_clean_restructure_v8/ ./
+rm -rf /tmp/whisper_v9
+mkdir -p /tmp/whisper_v9
+unzip -o ~/Downloads/Whisper_clean_restructure_v9.zip -d /tmp/whisper_v9
+rsync -av /tmp/whisper_v9/Whisper_clean_restructure_v9/ ./
 ```
 
 Make launcher executable:
@@ -43,10 +43,11 @@ Remove tracked secrets documentation if it exists. This does **not** delete your
 git rm -f secrets/README.md 2>/dev/null || true
 ```
 
-Verify that the local token is ignored, but remember: v8 does not use it.
+Verify that generated output folders and the local token are ignored. v9 does not use tokens in the normal workflow.
 
 ```bash
 git check-ignore -v secrets/token.txt 2>/dev/null || true
+git check-ignore -v output_transkrypcja 2>/dev/null || true
 ```
 
 Test:
@@ -62,6 +63,6 @@ Commit:
 git status --short
 git add README.md .gitignore requirements-kb.txt requirements-whisper.txt scripts src docs/REPLACE_INSTRUCTIONS.md
 git add -u
-git commit -m "Use stable local model cache"
+git commit -m "Write transcription outputs next to source files"
 git push
 ```
