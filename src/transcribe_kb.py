@@ -36,6 +36,19 @@ DEFAULT_MODEL = os.environ.get("KB_WHISPER_MODEL", "KBLab/kb-whisper-large")
 DEFAULT_REVISION = os.environ.get("KB_WHISPER_REVISION", "standard")
 
 
+def resolve_hf_cache_dir() -> str:
+    """Return stable Hugging Face cache dir for this repo/session."""
+    value = (
+        os.environ.get("HF_HUB_CACHE")
+        or os.environ.get("TRANSFORMERS_CACHE")
+        or os.environ.get("HF_HOME")
+        or "cache/huggingface/hub"
+    )
+    path = Path(value).expanduser().resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
 def run(cmd: list[str]) -> None:
     subprocess.run(cmd, check=True)
 
@@ -52,6 +65,70 @@ def safe_name(value: str) -> str:
         else:
             keep.append("_")
     return "".join(keep).strip("_")
+
+
+def format_timestamp(seconds: Any) -> str:
+    if seconds is None:
+        seconds = 0.0
+    try:
+        total_ms = int(round(float(seconds) * 1000))
+    except Exception:
+        total_ms = 0
+
+    hours, rem = divmod(total_ms, 3600_000)
+    minutes, rem = divmod(rem, 60_000)
+    secs, millis = divmod(rem, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
+def extract_segments(result: dict[str, Any]) -> list[dict[str, Any]]:
+    chunks = result.get("chunks") or []
+    segments: list[dict[str, Any]] = []
+
+    for chunk in chunks:
+        text = (chunk.get("text") or "").strip()
+        if not text:
+            continue
+
+        ts = chunk.get("timestamp") or chunk.get("timestamps")
+        start = None
+        end = None
+        if isinstance(ts, (list, tuple)) and len(ts) >= 2:
+            start, end = ts[0], ts[1]
+
+        segments.append({"start": start, "end": end, "text": text})
+
+    return segments
+
+
+def format_readable_txt(
+    *,
+    input_path: Path,
+    model_id: str,
+    revision: str,
+    elapsed_seconds: float,
+    result: dict[str, Any],
+) -> str:
+    lines: list[str] = [
+        f"# Input: {input_path}",
+        f"# Model: {model_id}",
+        f"# Revision: {revision}",
+        f"# Elapsed seconds: {elapsed_seconds:.1f}",
+        "",
+    ]
+
+    segments = extract_segments(result)
+    if segments:
+        for segment in segments:
+            start = format_timestamp(segment.get("start"))
+            end = format_timestamp(segment.get("end"))
+            lines.append(f"[{start}–{end}] {segment['text']}")
+    else:
+        text = (result.get("text") or "").strip()
+        lines.append(text)
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 def ffmpeg_to_wav16k_mono(input_path: Path, tmp_dir: Path) -> Path:
@@ -89,13 +166,15 @@ def load_asr(model_id: str, revision: str, force_cpu: bool):
     # Do not auto-use HF_TOKEN/HUGGINGFACE_TOKEN from the shell, because a stale
     # or malformed token can break public model downloads with HTTP header errors.
     hf_token = False
+    cache_dir = resolve_hf_cache_dir()
+    print(f"HF cache:                {cache_dir}")
 
     model = AutoModelForSpeechSeq2Seq.from_pretrained(
         model_id,
         revision=revision,
         dtype=torch_dtype,
         use_safetensors=True,
-        cache_dir="cache",
+        cache_dir=cache_dir,
         low_cpu_mem_usage=True,
         token=hf_token,
     )
@@ -104,7 +183,7 @@ def load_asr(model_id: str, revision: str, force_cpu: bool):
     processor = AutoProcessor.from_pretrained(
         model_id,
         revision=revision,
-        cache_dir="cache",
+        cache_dir=cache_dir,
         token=hf_token,
     )
 
@@ -115,6 +194,7 @@ def load_asr(model_id: str, revision: str, force_cpu: bool):
         feature_extractor=processor.feature_extractor,
         dtype=torch_dtype,
         device=device,
+        ignore_warning=True,
     )
 
     return asr, device
@@ -139,8 +219,16 @@ def save_outputs(
     json_path = outdir / f"{base_name}.json"
 
     text = (result.get("text") or "").strip()
+    segments = extract_segments(result)
 
-    txt_path.write_text(text + "\n", encoding="utf-8")
+    readable_txt = format_readable_txt(
+        input_path=input_path,
+        model_id=model_id,
+        revision=revision,
+        elapsed_seconds=elapsed_seconds,
+        result=result,
+    )
+    txt_path.write_text(readable_txt, encoding="utf-8")
 
     payload = {
         "input": str(input_path),
@@ -150,6 +238,7 @@ def save_outputs(
         "task": "transcribe",
         "elapsed_seconds": round(elapsed_seconds, 3),
         "text": text,
+        "segments": segments,
         "raw_result": result,
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")

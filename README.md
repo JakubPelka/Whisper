@@ -52,10 +52,36 @@ Local-only files and folders, not committed:
 
 ```text
 outputs/
-cache/
+cache/              # local model cache, ignored by Git
 .venv_kb/
 .venv_whisper/
 secrets/token.txt   # optional old/local file; not used by normal workflow
+```
+
+## Important v8 change: stable local model cache
+
+Large model files are cached inside the repository working folder:
+
+```text
+cache/                   # KB-Whisper / Hugging Face models
+cache/openai-whisper/    # OpenAI Whisper models
+```
+
+The `cache/` folder is ignored by Git. Do not commit it. Keep it locally if you want models to stay available between runs, also weeks later. If you delete `cache/`, models will be downloaded again.
+
+For compatibility with v7, Hugging Face cache stays directly under `cache/`, so the model you already downloaded should be reused. The launcher exports stable cache paths automatically:
+
+```text
+HF_HOME
+HF_HUB_CACHE
+TRANSFORMERS_CACHE
+WHISPER_CACHE_DIR
+```
+
+You can override the cache location if needed:
+
+```bash
+CACHE_ROOT="/mnt/lacie/WhisperCache" ./scripts/start.sh
 ```
 
 ## Important v6 change: no token in normal workflow
@@ -222,7 +248,7 @@ The launcher creates local virtual environments as needed:
 
 They are ignored by Git.
 
-First run can download large Python/CUDA packages and the KB model file. That is expected. Later runs reuse the local virtual environment and model cache.
+First run can download large Python/CUDA packages and the KB/OpenAI Whisper model files. That is expected. Later runs reuse the local virtual environment and the stable local model cache in `cache/`, as long as that folder is not deleted.
 
 ## GPU notes
 

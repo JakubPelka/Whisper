@@ -240,9 +240,9 @@ ask_kb_params() {
   if [[ -z "${KB_WHISPER_REVISION:-}" ]]; then
     echo ""
     echo "Wybierz styl transkrypcji KB-Whisper:"
-    echo "  1) standard — domyślny"
-    echo "  2) strict   — bardziej dosłowny"
-    echo "  3) subtitle — bardziej skrócony"
+    echo "  1) standard — zalecany, czytelny format bazowy"
+    echo "  2) strict   — bardziej dosłowny, czasem mniej czytelny"
+    echo "  3) subtitle — bardziej skrócony / napisowy"
     read -p "Twój wybór [1-3] (ENTER=standard): " REV_CHOICE
     case "${REV_CHOICE:-1}" in
       1|"") KB_WHISPER_REVISION="standard" ;;
@@ -289,6 +289,24 @@ ask_whisper_params() {
       *) WHISPER_PRESET="fast" ;;
     esac
   fi
+}
+
+
+configure_local_cache() {
+  # Stable local cache inside the repository.
+  # This avoids re-downloading large models when the same repo is used later,
+  # as long as ./cache is not deleted. The folder is ignored by Git.
+  CACHE_ROOT="${CACHE_ROOT:-$ROOT_DIR/cache}"
+  export CACHE_ROOT
+
+  # Keep HF_HUB_CACHE directly at ./cache to reuse models already downloaded by v7.
+  export HF_HOME="${HF_HOME:-$CACHE_ROOT/huggingface-home}"
+  export HF_HUB_CACHE="${HF_HUB_CACHE:-$CACHE_ROOT}"
+  export TRANSFORMERS_CACHE="${TRANSFORMERS_CACHE:-$CACHE_ROOT}"
+  export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$CACHE_ROOT/xdg}"
+  export WHISPER_CACHE_DIR="${WHISPER_CACHE_DIR:-$CACHE_ROOT/openai-whisper}"
+
+  mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$XDG_CACHE_HOME" "$WHISPER_CACHE_DIR"
 }
 
 ensure_base_tools() {
@@ -347,6 +365,7 @@ run_kb() {
   echo "Out dir:  $OUT_DIR"
   echo "Model:    $KB_WHISPER_MODEL"
   echo "Revision: $KB_WHISPER_REVISION"
+  echo "Cache:    $HF_HUB_CACHE"
   echo ""
   printf 'Input files:\n'
   printf '  %s\n' "${INPUT_PATHS[@]}"
@@ -373,6 +392,7 @@ run_whisper() {
   echo "Language: $LANGUAGE"
   echo "Model:    $WHISPER_MODEL"
   echo "Preset:   $WHISPER_PRESET"
+  echo "Cache:    $WHISPER_CACHE_DIR"
   echo ""
   printf 'Input files:\n'
   printf '  %s\n' "${INPUT_PATHS[@]}"
@@ -396,6 +416,7 @@ main() {
   echo "- diarization/pyannote: wyłączone"
 
   ensure_base_tools
+  configure_local_cache
   ask_input_scope
   ask_language_and_engine
   ask_output_dir

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -69,6 +70,13 @@ def resolve_device(force_cpu: bool) -> str:
     if torch.cuda.is_available():
         return "cuda"
     return "cpu"
+
+
+def resolve_whisper_cache_dir() -> str:
+    value = os.environ.get("WHISPER_CACHE_DIR") or "cache/openai-whisper"
+    path = Path(value).expanduser().resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 
 def normalize_language(language: str) -> str | None:
@@ -141,10 +149,12 @@ def main() -> int:
     print(f"Loading OpenAI Whisper model: {args.model}")
     print(f"Device:                     {device}")
     print(f"Language:                   {language or 'auto'}")
+    cache_dir = resolve_whisper_cache_dir()
     print(f"Preset:                     {args.preset}")
+    print(f"Whisper cache:              {cache_dir}")
 
     total_start = time.time()
-    model = whisper.load_model(args.model, device=device)
+    model = whisper.load_model(args.model, device=device, download_root=cache_dir)
 
     failures = 0
     for index, input_path in enumerate(input_paths, start=1):
