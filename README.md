@@ -1,104 +1,199 @@
 # Whisper
 
-**Status:** EXPERIMENT / ACTIVE  
-**Primary purpose:** local speech-to-text experiments, mainly for Swedish audio transcription.
+**Status:** ACTIVE / LOCAL TOOLING  
+**Purpose:** local audio transcription with a clean split between Swedish KB-Whisper and general OpenAI Whisper.
 
-This repository contains local transcription tools for audio recordings. The current preferred path for Swedish is **KB-Whisper** from KBLab / Kungliga biblioteket.
+This repository is a small local transcription toolkit. It is not a backup folder and should not contain audio recordings, generated outputs, model caches or secrets.
 
-The older OpenAI Whisper + pyannote script is kept for comparison and for diarization experiments.
+## Recommended use
 
----
+Use one main launcher:
 
-## Current direction
+```bash
+./scripts/start.sh
+```
 
-For Swedish transcription we use:
+The launcher asks for:
+
+1. what to analyse:
+   - one file,
+   - several files separated with `;`,
+   - a whole folder,
+2. recording language,
+3. output folder,
+4. model options.
+
+Routing is automatic:
+
+```text
+sv / Swedish      -> KB-Whisper
+other languages   -> OpenAI Whisper
+auto detection    -> OpenAI Whisper
+```
+
+Diarization / speaker separation is intentionally removed from the normal workflow. It was too slow and too GPU-heavy for this repo's current practical use.
+
+## Repository structure
+
+```text
+Whisper/
+├── README.md
+├── .gitignore
+├── requirements-kb.txt
+├── requirements-whisper.txt
+├── scripts/
+│   └── start.sh
+├── src/
+│   ├── transcribe_kb.py
+│   └── transcribe_whisper.py
+└── secrets/
+    └── README.md
+```
+
+Local-only file, not committed:
+
+```text
+secrets/token.txt
+```
+
+## Backend choice
+
+### Swedish
+
+For Swedish recordings, use KB-Whisper:
 
 ```text
 KBLab/kb-whisper-large
-```
-
-This is the default model for the KB-Whisper launcher.
-
-Fallback / lower VRAM option:
-
-```text
 KBLab/kb-whisper-medium
 ```
 
-The older OpenAI Whisper + pyannote pipeline remains useful for diarization tests, but it should not be the default Swedish ASR path.
-
----
-
-## Why KB-Whisper for Swedish?
-
-KB-Whisper is a family of Swedish Whisper models from KBLab / Kungliga biblioteket.
-
-Links:
-
-- KB-Whisper large: <https://huggingface.co/KBLab/kb-whisper-large>
-- KB-Whisper medium: <https://huggingface.co/KBLab/kb-whisper-medium>
-- KBLab on Hugging Face: <https://huggingface.co/KBLab>
-
-In this repo:
-
-- `KBLab/kb-whisper-large` is the default model for Swedish.
-- `KBLab/kb-whisper-medium` is the practical fallback.
-- `revision=standard` is the default transcription style.
-- `revision=strict` can be tested for more verbatim-like output.
-- `revision=subtitle` can be tested for more condensed output.
-
----
-
-## Repository contents
-
-Main files:
+Default recommendation:
 
 ```text
-transcribe_kb_whisper.py       # KB-Whisper Swedish ASR test script
-start_kb_whisper_test.sh       # launcher for KB-Whisper tests
-transcribe_diarize.py          # older Whisper + pyannote diarization pipeline
-start_whisper_sv.sh            # launcher for older OpenAI Whisper path
-README.md
-.gitignore
+KBLab/kb-whisper-large
+revision=standard
 ```
 
-Recommended current entry point:
+Use `medium` only if large is too slow or too heavy.
+
+### Other languages
+
+For Polish, English, auto-detection or other languages, use OpenAI Whisper:
+
+```text
+tiny
+base
+small
+medium
+large-v3-turbo
+large-v3
+```
+
+Default recommendation:
+
+```text
+large-v3-turbo
+preset=fast
+```
+
+## Interactive examples
+
+Start the menu:
 
 ```bash
-./start_kb_whisper_test.sh
+cd /home/jakub-pelka/GitHub/Whisper
+./scripts/start.sh
 ```
 
----
-
-## Default local test input
-
-The launcher currently expects the local test audio here:
+Then choose:
 
 ```text
-/home/jakub-pelka/MobileTransfer/Recordings/Violett guldvinge.m4a
+1) one file
+2) several files separated with ;
+3) whole folder
 ```
 
-Default output folder:
+If you choose Swedish, the launcher uses KB-Whisper. If you choose another language, it uses OpenAI Whisper.
+
+## Non-interactive examples
+
+One Swedish file:
+
+```bash
+INPUT_FILE="/path/to/audio.m4a" LANGUAGE=sv ./scripts/start.sh
+```
+
+Several Swedish files:
+
+```bash
+INPUT_FILES="/path/a.m4a;/path/b.m4a" LANGUAGE=sv ./scripts/start.sh
+```
+
+Whole folder, Swedish, with medium KB model:
+
+```bash
+INPUT_DIR="/path/to/folder" LANGUAGE=sv KB_SIZE=medium ./scripts/start.sh
+```
+
+Polish file with OpenAI Whisper:
+
+```bash
+INPUT_FILE="/path/to/audio.m4a" LANGUAGE=pl WHISPER_MODEL=large-v3-turbo WHISPER_PRESET=fast ./scripts/start.sh
+```
+
+Auto language detection with OpenAI Whisper:
+
+```bash
+INPUT_FILE="/path/to/audio.m4a" LANGUAGE=auto ./scripts/start.sh
+```
+
+Search subfolders when using folder mode:
+
+```bash
+AUDIO_FIND_MAXDEPTH=2 INPUT_DIR="/path/to/folder" LANGUAGE=sv ./scripts/start.sh
+```
+
+## Outputs
+
+Default output folders:
 
 ```text
-/home/jakub-pelka/MobileTransfer/Recordings/kb_whisper_tests/
+outputs/kb/
+outputs/whisper/
 ```
 
-These paths are local only. Audio files, temporary files, cache folders and transcription outputs should not be committed to GitHub.
-
----
-
-## Supported audio formats
-
-The older diarization script supports common audio/video formats such as:
+Each processed file produces:
 
 ```text
-.wav .mp3 .m4a .aac .wma .ogg .flac .mkv .mp4 .m4b
+.txt
+.json
 ```
 
-The KB-Whisper test script uses `ffmpeg` to convert input audio to mono 16 kHz WAV before transcription. This means `.m4a` recordings from a phone should work as long as `ffmpeg` is installed.
+The `.txt` file contains the transcription text. The `.json` file keeps metadata and raw model output for later debugging.
 
----
+## Secrets and token file
+
+The repo expects a local token file here if a Hugging Face token is needed:
+
+```text
+secrets/token.txt
+```
+
+The file is ignored by Git and must not be committed.
+
+Set permissions locally:
+
+```bash
+chmod 600 secrets/token.txt
+```
+
+Check that Git ignores it:
+
+```bash
+git check-ignore -v secrets/token.txt
+```
+
+Current clean workflows do not use pyannote. KB-Whisper may still benefit from a Hugging Face token in some situations, so the launcher loads the token into the environment if the file exists.
 
 ## Requirements
 
@@ -109,334 +204,75 @@ sudo apt update
 sudo apt install -y ffmpeg python3-venv git
 ```
 
-The KB-Whisper launcher installs Python dependencies into a local virtual environment:
+Python dependencies are split:
 
 ```text
-.venv_kb_whisper/
+requirements-kb.txt
+requirements-whisper.txt
 ```
 
-The launcher installs or updates:
+The launcher creates local virtual environments as needed:
 
 ```text
-torch
-torchaudio
-transformers
-accelerate
-safetensors
-soundfile
-librosa
-sentencepiece
+.venv_kb/
+.venv_whisper/
 ```
 
----
-
-## Run KB-Whisper large
-
-```bash
-cd /home/jakub-pelka/GitHub/Whisper
-./start_kb_whisper_test.sh
-```
-
-This uses:
-
-```text
-model:    KBLab/kb-whisper-large
-revision: standard
-language: sv
-```
-
----
-
-## Run KB-Whisper medium fallback
-
-```bash
-cd /home/jakub-pelka/GitHub/Whisper
-KB_WHISPER_MODEL=KBLab/kb-whisper-medium ./start_kb_whisper_test.sh
-```
-
----
-
-## Run strict transcription style
-
-```bash
-cd /home/jakub-pelka/GitHub/Whisper
-KB_WHISPER_MODEL=KBLab/kb-whisper-large KB_WHISPER_REVISION=strict ./start_kb_whisper_test.sh
-```
-
----
-
-## Run subtitle-style transcription
-
-```bash
-cd /home/jakub-pelka/GitHub/Whisper
-KB_WHISPER_MODEL=KBLab/kb-whisper-large KB_WHISPER_REVISION=subtitle ./start_kb_whisper_test.sh
-```
-
----
+They are ignored by Git.
 
 ## GPU notes
 
-Tested locally on RTX 2070 8 GB:
+The practical default for the local RTX 2070 8 GB setup is:
 
 ```text
-KBLab/kb-whisper-medium  OK
-KBLab/kb-whisper-large   OK, acceptable runtime
+Swedish:        KB-Whisper large
+Other languages: OpenAI Whisper large-v3-turbo, fast preset
 ```
 
-If CUDA memory errors appear, try medium:
+If GPU memory is tight:
 
 ```bash
-KB_WHISPER_MODEL=KBLab/kb-whisper-medium ./start_kb_whisper_test.sh
+LANGUAGE=sv KB_SIZE=medium ./scripts/start.sh
 ```
 
-or force CPU:
+or for OpenAI Whisper:
 
 ```bash
-python transcribe_kb_whisper.py --cpu --model KBLab/kb-whisper-large
+LANGUAGE=pl WHISPER_MODEL=medium ./scripts/start.sh
 ```
 
----
+## Removed from normal workflow
 
-## Diarization status
-
-Diarization means separating speakers, for example:
+The following are intentionally not part of the clean workflow:
 
 ```text
-SPEAKER_00: ...
-SPEAKER_01: ...
+pyannote diarization
+speaker separation
+per-speaker segment slicing
+moving source audio to processed_files/
 ```
 
-Current status:
+Reason: these paths were slow, GPU-heavy and fragile compared with plain transcription.
 
-```text
-OpenAI Whisper + pyannote pipeline: exists
-KB-Whisper Swedish ASR: works
-KB-Whisper + diarization: planned
-```
+## Recommended cleanup after applying this structure
 
-The older `transcribe_diarize.py` script already follows this general flow:
-
-```text
-audio
-  -> WAV 16 kHz mono
-  -> pyannote diarization
-  -> segment slicing
-  -> OpenAI Whisper transcription
-  -> TXT/JSON output
-```
-
-The next logical step is a new script that keeps the diarization part but replaces the transcription backend with KB-Whisper:
-
-```text
-audio
-  -> pyannote speaker diarization
-  -> split audio by speaker/time segment
-  -> transcribe each segment with KBLab/kb-whisper-large
-  -> export speaker-labelled TXT and JSON
-```
-
-Recommended future file name:
-
-```text
-transcribe_kb_diarize.py
-```
-
----
-
-## Diarization options
-
-### Option A — pyannote + KB-Whisper
-
-Best practical next step.
-
-Pros:
-
-- reuses the current diarization idea,
-- should fit the current local repository structure,
-- gives speaker-labelled Swedish transcription,
-- lets KB-Whisper remain the Swedish ASR backend.
-
-Cons:
-
-- requires a Hugging Face token,
-- requires accepting gated pyannote model terms,
-- adds GPU/VRAM pressure,
-- adds another failure point compared with plain transcription.
-
-Relevant model:
-
-- <https://huggingface.co/pyannote/speaker-diarization-3.1>
-
-### Option B — WhisperX + KB-Whisper
-
-Possible later experiment.
-
-Pros:
-
-- can provide better timestamps and alignment,
-- can be useful for subtitle-style workflows,
-- KBLab documents WhisperX-style usage for Swedish workflows.
-
-Cons:
-
-- more dependencies,
-- likely still needs pyannote for diarization,
-- larger change than Option A,
-- not ideal as the first stable implementation.
-
-### Option C — no diarization by default
-
-Safe default for quick transcription.
-
-Pros:
-
-- no pyannote token,
-- fewer moving parts,
-- easier to run from SSH,
-- best default for routine Swedish transcription.
-
-Cons:
-
-- no speaker labels.
-
----
-
-## Recommended default workflow
-
-For normal Swedish audio:
-
-```text
-.m4a / .mp3 / .wav
-  -> start_kb_whisper_test.sh
-  -> KBLab/kb-whisper-large
-  -> TXT + JSON output
-```
-
-For speaker-labelled transcription, use the future diarization path:
-
-```text
-.m4a / .mp3 / .wav
-  -> pyannote diarization
-  -> KB-Whisper large per segment
-  -> speaker-labelled TXT + JSON
-```
-
----
-
-## Security and repository hygiene
-
-Do not commit:
-
-```text
-HF tokens
-.env files
-audio recordings
-transcription outputs
-cache directories
-model files
-temporary WAV files
-processed_files/
-kb_whisper_tests/
-transkrypcje/
-```
-
-Hugging Face tokens should be passed through environment variables, not written into Python files:
+Remove old root-level scripts and old diarization files:
 
 ```bash
-export HF_TOKEN="hf_..."
-export HUGGINGFACE_TOKEN="$HF_TOKEN"
+rm -f transcribe_diarize.py
+rm -f transcribe_kb_whisper.py
+rm -f transcribe_kb_diarize.py
+rm -f start_kb_whisper_test.sh
+rm -f start_kb_fast.sh
+rm -f start_kb_diarize.sh
+rm -f start_whisper_sv.sh
 ```
 
-If a token was ever committed to a public repo, rotate it.
-
----
-
-## Recommended `.gitignore` coverage
-
-The repo should ignore at least:
-
-```gitignore
-# Local environments
-.venv/
-.venv_kb_whisper/
-__pycache__/
-*.pyc
-
-# Local model/cache files
-cache/
-.cache/
-models/
-
-# Audio/input/output data
-*.m4a
-*.mp3
-*.wav
-*.flac
-*.ogg
-*.aac
-*.wma
-*.m4b
-processed_files/
-kb_whisper_tests/
-transcriptions/
-transkrypcje/
-
-# Backups
-*.bak*
-```
-
----
-
-## Recommended git workflow
-
-Check what changed:
+Then commit only clean source/config files:
 
 ```bash
-git status
-git diff
+git add README.md .gitignore requirements-kb.txt requirements-whisper.txt scripts src secrets/README.md docs/REPLACE_INSTRUCTIONS.md
+git commit -m "Simplify transcription launcher"
 ```
 
-Add only source/config files:
-
-```bash
-git add README.md transcribe_kb_whisper.py start_kb_whisper_test.sh .gitignore
-```
-
-Avoid:
-
-```bash
-git add .
-```
-
-because that can accidentally add audio, cache files or generated outputs.
-
-Commit:
-
-```bash
-git commit -m "Document KB-Whisper Swedish ASR workflow"
-```
-
----
-
-## Roadmap
-
-Short term:
-
-- keep `KBLab/kb-whisper-large` as default Swedish ASR model,
-- compare `standard`, `strict`, and `subtitle` revisions,
-- clean hardcoded Hugging Face token from the old diarization script,
-- keep audio, model cache and outputs out of Git.
-
-Next:
-
-- add `transcribe_kb_diarize.py`,
-- reuse pyannote diarization,
-- use KB-Whisper large for segment transcription,
-- export speaker-labelled TXT and JSON.
-
-Later:
-
-- optional WhisperX experiment,
-- optional SRT/VTT export,
-- optional batch folder mode,
-- optional post-processing with a Swedish LLM for summaries and cleaned meeting notes.
+Do not run `git add .` unless you checked `git status --short` carefully.

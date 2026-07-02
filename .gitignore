@@ -27,3 +27,4 @@ transkrypcje/
 # Backups
 *.bak*
 /secrets
+/.venv_kb
