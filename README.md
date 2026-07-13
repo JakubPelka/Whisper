@@ -41,7 +41,13 @@ Whisper/
 ├── .gitignore
 ├── requirements-kb.txt
 ├── requirements-whisper.txt
+├── config/
+│   └── whisper-recordings-watcher.env.example
+├── docs/
+│   └── RECORDINGS_WATCHER.md
 ├── scripts/
+│   ├── install_watcher.sh
+│   ├── recordings_watcher.sh
 │   └── start.sh
 └── src/
     ├── transcribe_kb.py
@@ -163,7 +169,7 @@ preset=fast
 Start the menu:
 
 ```bash
-cd /home/jakub-pelka/GitHub/Whisper
+cd /home/jakub-pelka/GitHub/ProductivityMe/Whisper
 ./scripts/start.sh
 ```
 
@@ -245,6 +251,42 @@ Each processed file produces:
 ```
 
 The `.txt` file contains the transcription text. The `.json` file keeps metadata and raw model output for later debugging.
+
+## Optional automatic recordings watcher
+
+The optional local watcher monitors
+`/home/jakub-pelka/MobileTransfer/Recordings` and transcribes only supported
+files added after installation. Existing recordings are registered as a
+baseline without transcription. Results go into `output_transkrypcja/` next to
+the source recording.
+
+Install and verify it with:
+
+```bash
+./scripts/install_watcher.sh
+systemctl --user status whisper-recordings-watcher.path
+systemctl --user status whisper-recordings-watcher.timer
+```
+
+Run one scan or view logs:
+
+```bash
+./scripts/recordings_watcher.sh
+journalctl --user -u whisper-recordings-watcher.service -n 100 --no-pager
+tail -f ~/.local/state/whisper-recordings-watcher/watcher.log
+```
+
+Stop the automation with:
+
+```bash
+systemctl --user disable --now whisper-recordings-watcher.path
+systemctl --user disable --now whisper-recordings-watcher.timer
+```
+
+Change the language/model profile in
+`~/.config/whisper-recordings-watcher.env`. See
+[`docs/RECORDINGS_WATCHER.md`](docs/RECORDINGS_WATCHER.md) for state format,
+retry behavior, supported configuration, and operating details.
 
 ## Requirements
 

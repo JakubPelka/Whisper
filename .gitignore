@@ -1,6 +1,7 @@
 
 # Local environments
 .venv/
+.venv*/
 .venv_kb_whisper/
 __pycache__/
 *.pyc
@@ -9,6 +10,7 @@ __pycache__/
 cache/
 .cache/
 models/
+outputs/
 
 # Audio/input/output data
 *.m4a
@@ -23,9 +25,14 @@ processed_files/
 kb_whisper_tests/
 transcriptions/
 transkrypcje/
+output_transkrypcja/
+**/output_transkrypcja/
+
+# Local configuration, secrets and logs
+.env
+secrets/
+*.log
 
 # Backups
 *.bak*
-/secrets
 /.venv_kb
-/outputs

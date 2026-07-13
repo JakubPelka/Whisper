@@ -3,7 +3,7 @@
 Run from the local repository root:
 
 ```bash
-cd /home/jakub-pelka/GitHub/Whisper || exit 1
+cd /home/jakub-pelka/GitHub/ProductivityMe/Whisper || exit 1
 
 BACKUP_DIR="_backup_before_v9_output_next_to_source_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$BACKUP_DIR"
