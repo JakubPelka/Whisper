@@ -17,6 +17,15 @@ KB_MODEL="large"
 KB_REVISION="standard"
 WHISPER_MODEL="large-v3-turbo"
 WHISPER_PRESET="fast"
+GENERATE_MEETING_NOTE="true"
+NOTE_LANGUAGE="sv"
+NOTE_DRAFT_MODEL="gpt-5.6-luna"
+NOTE_VERIFICATION_MODEL="gpt-5.6-terra"
+NOTE_REASONING_EFFORT="medium"
+OPENAI_ENV_FILE=""
+TRANSCRIPT_DIR_NAME="output_transkrypcja"
+NOTE_DIR_NAME="Notatki"
+LOG_DIR_NAME="Logi"
 STABILITY_SECONDS="90"
 SCAN_INTERVAL_SECONDS="120"
 RECURSIVE_SCAN="false"
@@ -31,10 +40,6 @@ fi
 
 # Repository location always comes from this script, never from local config.
 ROOT_DIR="$RESOLVED_ROOT_DIR"
-
-mkdir -p "$STATE_DIR"
-touch "$LOG_FILE"
-exec > >(tee -a "$LOG_FILE") 2>&1
 
 log() {
   printf '[%(%Y-%m-%dT%H:%M:%S%z)T] %s\n' -1 "$*"
@@ -64,10 +69,23 @@ require_nonnegative_integer "SCAN_INTERVAL_SECONDS" "$SCAN_INTERVAL_SECONDS"
 require_nonnegative_integer "RETRY_DELAY_SECONDS" "$RETRY_DELAY_SECONDS"
 RECURSIVE_SCAN="$(normalize_boolean "$RECURSIVE_SCAN")"
 RETRY_FAILED="$(normalize_boolean "$RETRY_FAILED")"
+GENERATE_MEETING_NOTE="$(normalize_boolean "$GENERATE_MEETING_NOTE")"
+for folder_setting in "$TRANSCRIPT_DIR_NAME" "$NOTE_DIR_NAME"; do
+  [[ -n "$folder_setting" && "$folder_setting" != */* && "$folder_setting" != "." && "$folder_setting" != ".." ]] \
+    || die "output directory names must each be one safe folder name (got: $folder_setting)"
+done
+[[ -n "$LOG_DIR_NAME" && "$LOG_DIR_NAME" != */* && "$LOG_DIR_NAME" != "." && "$LOG_DIR_NAME" != ".." ]] \
+  || die "LOG_DIR_NAME must be one safe folder name (got: $LOG_DIR_NAME)"
 
 [[ -d "$WATCH_DIR" ]] || die "watch directory does not exist: $WATCH_DIR"
 [[ -x "$ROOT_DIR/scripts/start.sh" ]] || die "launcher is missing or not executable: $ROOT_DIR/scripts/start.sh"
 command -v flock >/dev/null 2>&1 || die "flock is required (normally provided by util-linux)"
+
+VISIBLE_LOG_DIR="$WATCH_DIR/$LOG_DIR_NAME"
+RUN_LOG_FILE="$VISIBLE_LOG_DIR/watcher-$(date +%Y%m%d-%H%M%S).log"
+mkdir -p "$STATE_DIR" "$VISIBLE_LOG_DIR"
+touch "$LOG_FILE" "$RUN_LOG_FILE"
+exec > >(tee -a "$LOG_FILE" "$RUN_LOG_FILE") 2>&1
 
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
@@ -106,6 +124,9 @@ find_candidates() {
 
   find "$WATCH_DIR" "${maxdepth_args[@]}" -type f \
     -not -path '*/output_transkrypcja/*' \
+    -not -path "*/$TRANSCRIPT_DIR_NAME/*" \
+    -not -path "*/$NOTE_DIR_NAME/*" \
+    -not -path "*/$LOG_DIR_NAME/*" \
     -not -path '*/.*' \
     -not -name '*~' \
     -not -iname '*.part' \
@@ -162,6 +183,77 @@ expected_outputs_exist() {
   fi
 }
 
+transcript_json_path() {
+  local file="$1"
+  local out_dir="$2"
+  local stem model_part lang_part base kb_model
+  stem="$(basename -- "$file")"
+  stem="${stem%.*}"
+
+  if [[ "${LANGUAGE,,}" =~ ^(sv|se|swe|swedish|szwedzki)$ ]]; then
+    kb_model="$(resolve_kb_model)"
+    model_part="$(safe_component "${kb_model//\//_}")"
+    base="${stem}_${model_part}_${KB_REVISION}"
+  else
+    model_part="$(safe_component "$WHISPER_MODEL")"
+    lang_part="$LANGUAGE"
+    [[ "${lang_part,,}" == "auto" ]] && lang_part="auto"
+    base="${stem}_openai-whisper_${model_part}_${lang_part}_${WHISPER_PRESET}"
+  fi
+  printf '%s/%s.json' "$out_dir" "$base"
+}
+
+expected_note_outputs_exist() {
+  local file="$1"
+  local transcript_dir="$2"
+  local note_dir="$3"
+  local stem docx_path audit_path transcript_json expected_hash actual_hash
+  stem="$(basename -- "$file")"
+  stem="${stem%.*}"
+  docx_path="$note_dir/${stem}_tjansteanteckning.docx"
+  audit_path="$note_dir/${stem}_tjansteanteckning.note.json"
+  transcript_json="$(transcript_json_path "$file" "$transcript_dir")"
+  [[ -s "$docx_path" && -s "$audit_path" && -s "$transcript_json" ]] || return 1
+
+  expected_hash="$(python3 - "$audit_path" <<'PY_NOTE_HASH'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        print(json.load(handle).get("transcript_sha256", ""))
+except (OSError, ValueError, TypeError):
+    pass
+PY_NOTE_HASH
+)"
+  actual_hash="$(sha256sum -- "$transcript_json" | awk '{print $1}')"
+  [[ -n "$expected_hash" && "$expected_hash" == "$actual_hash" ]]
+}
+
+generate_meeting_note() {
+  local file="$1"
+  local transcript_dir="$2"
+  local note_dir="$3"
+  local transcript_json prefix
+  transcript_json="$(transcript_json_path "$file" "$transcript_dir")"
+  prefix="$(basename -- "$file")"
+  prefix="${prefix%.*}_tjansteanteckning"
+
+  local args=(
+    --transcript-json "$transcript_json"
+    --outdir "$note_dir"
+    --output-prefix "$prefix"
+    --language "$NOTE_LANGUAGE"
+    --draft-model "$NOTE_DRAFT_MODEL"
+    --verification-model "$NOTE_VERIFICATION_MODEL"
+    --reasoning-effort "$NOTE_REASONING_EFFORT"
+  )
+  if [[ -n "$OPENAI_ENV_FILE" ]]; then
+    args+=(--env-file "$OPENAI_ENV_FILE")
+  fi
+  "$ROOT_DIR/scripts/generate_meeting_note.sh" "${args[@]}"
+}
+
 should_process() {
   local file="$1"
   local size="$2"
@@ -180,7 +272,7 @@ should_process() {
     completed|completed-existing)
       return 1
       ;;
-    failed|processing)
+    failed|processing|transcription-failed|note-failed)
       [[ "$RETRY_FAILED" == "true" ]] || return 1
       now="$(date +%s)"
       (( now - processed_at >= RETRY_DELAY_SECONDS ))
@@ -215,7 +307,9 @@ initialize_existing() {
 
 run_scan() {
   local found=0 processed=0 skipped=0 unstable=0 failed=0
-  local file absolute first_metadata second_metadata size mtime out_dir kb_model
+  local file absolute first_metadata second_metadata size mtime transcript_dir note_dir kb_model
+  local previous_state previous_size previous_mtime previous_processed previous_status
+  local reuse_transcript
   initialize_state_file
   log "Starting scan of $WATCH_DIR (recursive=$RECURSIVE_SCAN)."
 
@@ -249,28 +343,60 @@ run_scan() {
       continue
     fi
 
-    out_dir="$(dirname -- "$absolute")/output_transkrypcja"
+    previous_state="$(latest_state "$absolute")"
+    previous_size=""
+    previous_mtime=""
+    previous_processed=""
+    previous_status=""
+    if [[ -n "$previous_state" ]]; then
+      IFS=$'\t' read -r previous_size previous_mtime previous_processed previous_status <<< "$previous_state"
+    fi
+    reuse_transcript="false"
+    if [[ "$previous_size" == "$size" && "$previous_mtime" == "$mtime" && \
+          "$previous_status" =~ ^(note-failed|processing)$ ]]; then
+      reuse_transcript="true"
+    fi
+
+    transcript_dir="$(dirname -- "$absolute")/$TRANSCRIPT_DIR_NAME"
+    note_dir="$(dirname -- "$absolute")/$NOTE_DIR_NAME"
     append_state "$absolute" "$size" "$mtime" "$(date +%s)" "processing"
     log "Transcribing: $absolute"
 
     kb_model="$(resolve_kb_model)"
-    if INPUT_FILE="$absolute" \
-       LANGUAGE="$LANGUAGE" \
-       ENGINE="auto" \
-       OUT_DIR="$out_dir" \
-       KB_WHISPER_MODEL="$kb_model" \
-       KB_WHISPER_REVISION="$KB_REVISION" \
-       WHISPER_MODEL="$WHISPER_MODEL" \
-       WHISPER_PRESET="$WHISPER_PRESET" \
-       "$ROOT_DIR/scripts/start.sh" && expected_outputs_exist "$absolute" "$out_dir"; then
-      append_state "$absolute" "$size" "$mtime" "$(date +%s)" "completed"
-      log "Completed: $absolute"
-      ((processed += 1))
+    if [[ "$reuse_transcript" != "true" ]] || ! expected_outputs_exist "$absolute" "$transcript_dir"; then
+      if ! INPUT_FILE="$absolute" \
+         LANGUAGE="$LANGUAGE" \
+         ENGINE="auto" \
+         OUT_DIR="$transcript_dir" \
+         KB_WHISPER_MODEL="$kb_model" \
+         KB_WHISPER_REVISION="$KB_REVISION" \
+         WHISPER_MODEL="$WHISPER_MODEL" \
+         WHISPER_PRESET="$WHISPER_PRESET" \
+         "$ROOT_DIR/scripts/start.sh" || ! expected_outputs_exist "$absolute" "$transcript_dir"; then
+        append_state "$absolute" "$size" "$mtime" "$(date +%s)" "transcription-failed"
+        log "FAILED: transcription exited unsuccessfully or expected TXT/JSON output is missing: $absolute"
+        ((failed += 1))
+        continue
+      fi
     else
-      append_state "$absolute" "$size" "$mtime" "$(date +%s)" "failed"
-      log "FAILED: transcription exited unsuccessfully or expected TXT/JSON output is missing: $absolute"
-      ((failed += 1))
+      log "Retrying note stage with the existing transcript for the same source version; Whisper will not run again: $absolute"
     fi
+
+    if [[ "$GENERATE_MEETING_NOTE" == "true" ]]; then
+      if ! expected_note_outputs_exist "$absolute" "$transcript_dir" "$note_dir"; then
+        log "Generating professional meeting-note DOCX from local transcript: $absolute"
+        if ! generate_meeting_note "$absolute" "$transcript_dir" "$note_dir" || ! expected_note_outputs_exist "$absolute" "$transcript_dir" "$note_dir"; then
+          append_state "$absolute" "$size" "$mtime" "$(date +%s)" "note-failed"
+          log "FAILED: meeting-note API/DOCX stage failed; local transcript is preserved for retry: $absolute"
+          ((failed += 1))
+          continue
+        fi
+      fi
+    fi
+
+    append_state "$absolute" "$size" "$mtime" "$(date +%s)" "completed"
+    log "Completed: $absolute"
+    ((processed += 1))
   done < <(find_candidates)
 
   log "Scan complete: found=$found processed=$processed skipped=$skipped unstable=$unstable failed=$failed."

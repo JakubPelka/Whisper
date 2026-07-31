@@ -1,0 +1,4 @@
+# OpenAI Responses API with Pydantic Structured Outputs and local DOCX rendering.
+openai>=2.0,<3
+pydantic>=2.8,<3
+python-docx>=1.1,<2

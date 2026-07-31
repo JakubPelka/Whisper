@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR" || exit 1
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+ACTIVE_PYTHON=""
 INSTALL_DEPS="${INSTALL_DEPS:-auto}"
 AUDIO_FIND_MAXDEPTH="${AUDIO_FIND_MAXDEPTH:-1}"
 
@@ -359,12 +360,12 @@ ensure_kb_deps() {
     INSTALL_DEPS=1
   fi
 
-  source "$venv_dir/bin/activate"
+  ACTIVE_PYTHON="$venv_dir/bin/python"
 
   if [[ "$INSTALL_DEPS" == "1" || "$INSTALL_DEPS" == "true" ]]; then
-    python -m pip install --upgrade pip wheel
-    python -m pip install --upgrade "setuptools<82"
-    python -m pip install --upgrade -r requirements-kb.txt
+    "$ACTIVE_PYTHON" -m pip install --upgrade pip wheel
+    "$ACTIVE_PYTHON" -m pip install --upgrade "setuptools<82"
+    "$ACTIVE_PYTHON" -m pip install --upgrade -r requirements-kb.txt
   else
     echo "Skipping dependency install/update. Set INSTALL_DEPS=1 if needed."
   fi
@@ -378,12 +379,12 @@ ensure_whisper_deps() {
     INSTALL_DEPS=1
   fi
 
-  source "$venv_dir/bin/activate"
+  ACTIVE_PYTHON="$venv_dir/bin/python"
 
   if [[ "$INSTALL_DEPS" == "1" || "$INSTALL_DEPS" == "true" ]]; then
-    python -m pip install --upgrade pip wheel
-    python -m pip install --upgrade "setuptools<82"
-    python -m pip install --upgrade -r requirements-whisper.txt
+    "$ACTIVE_PYTHON" -m pip install --upgrade pip wheel
+    "$ACTIVE_PYTHON" -m pip install --upgrade "setuptools<82"
+    "$ACTIVE_PYTHON" -m pip install --upgrade -r requirements-whisper.txt
   else
     echo "Skipping dependency install/update. Set INSTALL_DEPS=1 if needed."
   fi
@@ -406,7 +407,7 @@ run_kb() {
 
   env -u HF_TOKEN -u HUGGINGFACE_TOKEN -u HUGGINGFACE_HUB_TOKEN \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-    python src/transcribe_kb.py \
+    "$ACTIVE_PYTHON" src/transcribe_kb.py \
     --input "${INPUT_PATHS[@]}" \
     --outdir "$OUT_DIR" \
     --model "$KB_WHISPER_MODEL" \
@@ -433,7 +434,7 @@ run_whisper() {
 
   env -u HF_TOKEN -u HUGGINGFACE_TOKEN -u HUGGINGFACE_HUB_TOKEN \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-    python src/transcribe_whisper.py \
+    "$ACTIVE_PYTHON" src/transcribe_whisper.py \
     --input "${INPUT_PATHS[@]}" \
     --outdir "$OUT_DIR" \
     --language "$LANGUAGE" \

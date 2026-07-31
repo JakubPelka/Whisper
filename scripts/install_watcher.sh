@@ -39,14 +39,17 @@ fi
 
 cat > "$SYSTEMD_USER_DIR/whisper-recordings-watcher.service" <<UNIT
 [Unit]
-Description=Transcribe new recordings with local Whisper
-After=default.target
+Description=Transcribe recordings locally and create professional meeting notes
+Wants=network-online.target
+After=default.target network-online.target
 
 [Service]
 Type=oneshot
 WorkingDirectory=$ROOT_DIR
 ExecStart=$ROOT_DIR/scripts/recordings_watcher.sh
 TimeoutStartSec=infinity
+TimeoutStopSec=30
+KillMode=control-group
 UNIT
 
 cat > "$SYSTEMD_USER_DIR/whisper-recordings-watcher.path" <<UNIT

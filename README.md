@@ -1,9 +1,14 @@
 # Whisper
 
 **Status:** ACTIVE / LOCAL TOOLING  
-**Purpose:** local audio transcription with one launcher and two clean backends.
+**Purpose:** local audio transcription plus automatic, grounded service-note DOCX files.
 
 This repository is a small local transcription toolkit. It is not a backup folder and should not contain audio recordings, generated outputs, model caches or secrets.
+
+Audio transcription remains local. The optional recordings watcher can send
+only the resulting timestamped transcript text to the OpenAI API, use a second
+API pass to verify the draft against its source segments, and render a
+professional DOCX locally. Audio files are never uploaded by the note stage.
 
 ## Recommended use
 
@@ -252,13 +257,29 @@ Each processed file produces:
 
 The `.txt` file contains the transcription text. The `.json` file keeps metadata and raw model output for later debugging.
 
+When automatic meeting notes are enabled, a new watched recording also
+produces:
+
+```text
+<recording>_tjansteanteckning.docx
+<recording>_tjansteanteckning.note.json
+```
+
+The DOCX contains the professional service note without a transcript appendix.
+The technical `.note.json` keeps the grounded structured draft, verification
+result, source segment references, transcript hash and API response IDs for
+audit and troubleshooting. It does not duplicate the full transcript.
+The watcher stores transcript TXT/JSON files in `output_transkrypcja/` and the
+DOCX plus audit file in `Notatki/`, both next to the recordings. Diagnostic logs
+for each watcher run are stored in the adjacent `Logi/` folder.
+
 ## Optional automatic recordings watcher
 
 The optional local watcher monitors
 `/home/jakub-pelka/MobileTransfer/Recordings` and transcribes only supported
 files added after installation. Existing recordings are registered as a
-baseline without transcription. Results go into `output_transkrypcja/` next to
-the source recording.
+baseline without transcription. Transcripts go into `output_transkrypcja/` and
+service notes into `Notatki/` next to the source recording.
 
 Install and verify it with:
 
@@ -288,6 +309,45 @@ Change the language/model profile in
 [`docs/RECORDINGS_WATCHER.md`](docs/RECORDINGS_WATCHER.md) for state format,
 retry behavior, supported configuration, and operating details.
 
+### Meeting-note API configuration
+
+The current default is a Swedish `tjänsteanteckning`:
+
+```text
+GENERATE_MEETING_NOTE=true
+NOTE_LANGUAGE=sv
+NOTE_DRAFT_MODEL=gpt-5.6-luna
+NOTE_VERIFICATION_MODEL=gpt-5.6-terra
+NOTE_REASONING_EFFORT=medium
+TRANSCRIPT_DIR_NAME=output_transkrypcja
+NOTE_DIR_NAME=Notatki
+LOG_DIR_NAME=Logi
+FFMPEG_TIMEOUT_SECONDS=1800
+```
+
+`NOTE_LANGUAGE` can later be changed to `pl`, `en`, or another language code.
+Swedish, Polish and English have localized DOCX labels; other codes use English
+labels while the note body follows the requested language.
+
+The default hybrid route uses GPT-5.6 Luna for drafting and GPT-5.6 Terra for
+the final evidence check.
+
+Never place the API key in this repository. Either expose `OPENAI_API_KEY` to
+the service or point `OPENAI_ENV_FILE` at a private mode-600 `KEY=value` file.
+Only that named key is read; the file is not evaluated as shell code.
+
+Run the note stage manually for an existing transcript JSON:
+
+```bash
+./scripts/generate_meeting_note.sh \
+  --transcript-json /path/output_transkrypcja/recording_model_standard.json \
+  --outdir /path/Notatki \
+  --language sv \
+  --draft-model gpt-5.6-luna \
+  --verification-model gpt-5.6-terra \
+  --env-file /path/to/private/openai.env
+```
+
 ## Requirements
 
 System packages:
@@ -302,6 +362,7 @@ Python dependencies are split:
 ```text
 requirements-kb.txt
 requirements-whisper.txt
+requirements-notes.txt
 ```
 
 The launcher creates local virtual environments as needed:
@@ -309,6 +370,7 @@ The launcher creates local virtual environments as needed:
 ```text
 .venv_kb/
 .venv_whisper/
+.venv_notes/
 ```
 
 They are ignored by Git.

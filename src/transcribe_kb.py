@@ -49,8 +49,8 @@ def resolve_hf_cache_dir() -> str:
     return str(path)
 
 
-def run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True)
+def run(cmd: list[str], *, timeout: int | None = None) -> None:
+    subprocess.run(cmd, check=True, timeout=timeout)
 
 
 def clean_path(value: str) -> Path:
@@ -135,14 +135,17 @@ def ffmpeg_to_wav16k_mono(input_path: Path, tmp_dir: Path) -> Path:
     out_wav = tmp_dir / f"{input_path.stem}_16k_mono.wav"
     run([
         "ffmpeg",
+        "-nostdin",
         "-y",
         "-hide_banner",
         "-loglevel", "error",
         "-i", str(input_path),
+        "-map", "0:a:0",
+        "-vn",
         "-ac", "1",
         "-ar", "16000",
         str(out_wav),
-    ])
+    ], timeout=int(os.environ.get("FFMPEG_TIMEOUT_SECONDS", "1800")))
     return out_wav
 
 

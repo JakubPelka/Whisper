@@ -1,0 +1,28 @@
+{
+  "input": "/synthetic/avstamningsmote.m4a",
+  "model": "synthetic-test",
+  "language": "sv",
+  "text": "Mötet gäller testprojekt Alfa. Beslut fattas att Erik skickar rapporten senast den 15 augusti. Annas efternamn hörs inte tydligt. Budgeten diskuteras men inget belopp beslutas.",
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 8.0,
+      "text": "Mötet gäller testprojekt Alfa."
+    },
+    {
+      "start": 8.0,
+      "end": 18.0,
+      "text": "Beslut fattas att Erik skickar rapporten senast den 15 augusti."
+    },
+    {
+      "start": 18.0,
+      "end": 26.0,
+      "text": "Annas efternamn hörs inte tydligt."
+    },
+    {
+      "start": 26.0,
+      "end": 35.0,
+      "text": "Budgeten diskuteras men inget belopp beslutas."
+    }
+  ]
+}
