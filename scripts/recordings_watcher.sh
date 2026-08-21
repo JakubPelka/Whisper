@@ -17,7 +17,14 @@ KB_MODEL="large"
 KB_REVISION="standard"
 WHISPER_MODEL="large-v3-turbo"
 WHISPER_PRESET="fast"
+GENERATE_MEETING_NOTE="true"
+NOTE_LANGUAGE="sv"
+NOTE_DRAFT_MODEL="gpt-5.6-luna"
+NOTE_VERIFICATION_MODEL="gpt-5.6-terra"
+NOTE_REASONING_EFFORT="medium"
+OPENAI_ENV_FILE=""
 TRANSCRIPT_DIR_NAME="output_transkrypcja"
+NOTE_DIR_NAME="Notatki"
 FFPROBE_TIMEOUT_SECONDS="120"
 FFMPEG_TIMEOUT_SECONDS="1800"
 STABILITY_SECONDS="90"
@@ -61,9 +68,12 @@ require_nonnegative_integer "FFPROBE_TIMEOUT_SECONDS" "$FFPROBE_TIMEOUT_SECONDS"
 require_nonnegative_integer "FFMPEG_TIMEOUT_SECONDS" "$FFMPEG_TIMEOUT_SECONDS"
 RECURSIVE_SCAN="$(normalize_boolean "$RECURSIVE_SCAN")"
 RETRY_FAILED="$(normalize_boolean "$RETRY_FAILED")"
-[[ -n "$TRANSCRIPT_DIR_NAME" && "$TRANSCRIPT_DIR_NAME" != */* && \
-   "$TRANSCRIPT_DIR_NAME" != "." && "$TRANSCRIPT_DIR_NAME" != ".." ]] \
-  || die "TRANSCRIPT_DIR_NAME must be one safe folder name (got: $TRANSCRIPT_DIR_NAME)"
+GENERATE_MEETING_NOTE="$(normalize_boolean "$GENERATE_MEETING_NOTE")"
+for folder_setting in "$TRANSCRIPT_DIR_NAME" "$NOTE_DIR_NAME"; do
+  [[ -n "$folder_setting" && "$folder_setting" != */* && \
+     "$folder_setting" != "." && "$folder_setting" != ".." ]] \
+    || die "output directory names must each be one safe folder name (got: $folder_setting)"
+done
 
 [[ -d "$WATCH_DIR" ]] || die "watch directory does not exist: $WATCH_DIR"
 [[ -x "$ROOT_DIR/scripts/start.sh" ]] || die "launcher is missing or not executable: $ROOT_DIR/scripts/start.sh"
@@ -120,6 +130,7 @@ find_candidates() {
   find "$WATCH_DIR" "${maxdepth_args[@]}" -type f \
     -not -path '*/output_transkrypcja/*' \
     -not -path "*/$TRANSCRIPT_DIR_NAME/*" \
+    -not -path "*/$NOTE_DIR_NAME/*" \
     -not -path '*/.*' \
     -not -name '*~' \
     -not -iname '*.part' \
@@ -177,10 +188,83 @@ expected_outputs_exist() {
   fi
 }
 
+transcript_json_path() {
+  local file="$1"
+  local out_dir="$2"
+  local stem model_part lang_part base kb_model
+  stem="$(basename -- "$file")"
+  stem="${stem%.*}"
+
+  if [[ "${LANGUAGE,,}" =~ ^(sv|se|swe|swedish|szwedzki)$ ]]; then
+    kb_model="$(resolve_kb_model)"
+    model_part="$(safe_component "${kb_model//\//_}")"
+    base="${stem}_${model_part}_${KB_REVISION}"
+  else
+    model_part="$(safe_component "$WHISPER_MODEL")"
+    lang_part="$LANGUAGE"
+    [[ "${lang_part,,}" == "auto" ]] && lang_part="auto"
+    base="${stem}_openai-whisper_${model_part}_${lang_part}_${WHISPER_PRESET}"
+  fi
+  printf '%s/%s.json' "$out_dir" "$base"
+}
+
+expected_note_outputs_exist() {
+  local file="$1"
+  local transcript_dir="$2"
+  local note_dir="$3"
+  local stem docx_path audit_path transcript_json expected_hash actual_hash
+  stem="$(basename -- "$file")"
+  stem="${stem%.*}"
+  docx_path="$note_dir/${stem}_tjansteanteckning.docx"
+  audit_path="$note_dir/${stem}_tjansteanteckning.note.json"
+  transcript_json="$(transcript_json_path "$file" "$transcript_dir")"
+  [[ -s "$docx_path" && -s "$audit_path" && -s "$transcript_json" ]] || return 1
+
+  expected_hash="$(python3 - "$audit_path" <<'PY_NOTE_HASH'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        print(json.load(handle).get("transcript_sha256", ""))
+except (OSError, ValueError, TypeError):
+    pass
+PY_NOTE_HASH
+)"
+  actual_hash="$(sha256sum -- "$transcript_json" | awk '{print $1}')"
+  [[ -n "$expected_hash" && "$expected_hash" == "$actual_hash" ]]
+}
+
+generate_meeting_note() {
+  local file="$1"
+  local transcript_dir="$2"
+  local note_dir="$3"
+  local transcript_json prefix
+  transcript_json="$(transcript_json_path "$file" "$transcript_dir")"
+  prefix="$(basename -- "$file")"
+  prefix="${prefix%.*}_tjansteanteckning"
+
+  local args=(
+    --transcript-json "$transcript_json"
+    --outdir "$note_dir"
+    --output-prefix "$prefix"
+    --language "$NOTE_LANGUAGE"
+    --draft-model "$NOTE_DRAFT_MODEL"
+    --verification-model "$NOTE_VERIFICATION_MODEL"
+    --reasoning-effort "$NOTE_REASONING_EFFORT"
+  )
+  if [[ -n "$OPENAI_ENV_FILE" ]]; then
+    args+=(--env-file "$OPENAI_ENV_FILE")
+  fi
+  "$ROOT_DIR/scripts/generate_meeting_note.sh" "${args[@]}"
+}
+
 should_process() {
   local file="$1"
   local size="$2"
   local mtime="$3"
+  local transcript_dir="$4"
+  local note_dir="$5"
   local state state_size state_mtime processed_at status now
 
   state="$(latest_state "$file")"
@@ -192,7 +276,14 @@ should_process() {
   fi
 
   case "$status" in
-    completed|completed-existing|unsupported)
+    completed-existing|unsupported)
+      return 1
+      ;;
+    completed)
+      expected_outputs_exist "$file" "$transcript_dir" || return 0
+      if [[ "$GENERATE_MEETING_NOTE" == "true" ]]; then
+        expected_note_outputs_exist "$file" "$transcript_dir" "$note_dir" || return 0
+      fi
       return 1
       ;;
     failed|processing|transcription-failed|note-failed)
@@ -240,20 +331,21 @@ repair_missing_state() {
 
 failure_reason() {
   local diagnostics="$1"
+  local fallback="${2:-operation failed}"
   local reason
   reason="$(grep -m1 '^AUDIO_PREPARATION_ERROR:' <<< "$diagnostics" 2>/dev/null || true)"
   if [[ -z "$reason" ]]; then
     reason="$(grep -E '^(ERROR|ERROR while processing)' <<< "$diagnostics" 2>/dev/null | tail -1 || true)"
   fi
-  [[ -n "$reason" ]] || reason="transcription exited unsuccessfully or expected TXT/JSON output is missing"
+  [[ -n "$reason" ]] || reason="$fallback"
   reason="$(printf '%s' "$reason" | tr '\t\r\n' ' ' | cut -c1-500)"
   printf '%s' "$reason"
 }
 
 run_scan() {
   local failures=0
-  local file absolute first_metadata second_metadata size mtime transcript_dir kb_model
-  local started_at elapsed reason diagnostics
+  local file absolute first_metadata second_metadata size mtime transcript_dir note_dir kb_model
+  local started_at elapsed reason diagnostics reuse_transcript
 
   if [[ ! -e "$STATE_FILE" ]]; then
     repair_missing_state
@@ -268,53 +360,83 @@ run_scan() {
 
     first_metadata="$(file_metadata "$absolute")" || continue
     IFS=$'\t' read -r size mtime <<< "$first_metadata"
-    if ! should_process "$absolute" "$size" "$mtime"; then
-      continue
-    fi
-
-    sleep "$STABILITY_SECONDS"
-    if [[ ! -f "$absolute" ]]; then
-      continue
-    fi
-    second_metadata="$(file_metadata "$absolute")"
-    if [[ "$first_metadata" != "$second_metadata" ]]; then
-      continue
-    fi
-
     transcript_dir="$(dirname -- "$absolute")/$TRANSCRIPT_DIR_NAME"
+    note_dir="$(dirname -- "$absolute")/$NOTE_DIR_NAME"
+    if ! should_process "$absolute" "$size" "$mtime" "$transcript_dir" "$note_dir"; then
+      continue
+    fi
+
+    reuse_transcript="false"
+    if expected_outputs_exist "$absolute" "$transcript_dir"; then
+      reuse_transcript="true"
+    else
+      sleep "$STABILITY_SECONDS"
+      if [[ ! -f "$absolute" ]]; then
+        continue
+      fi
+      second_metadata="$(file_metadata "$absolute")"
+      if [[ "$first_metadata" != "$second_metadata" ]]; then
+        continue
+      fi
+    fi
+
     append_state "$absolute" "$size" "$mtime" "$(date +%s)" "processing"
-    event "PROCESSING" "$absolute"
+    if [[ "$reuse_transcript" == "true" ]]; then
+      event "PROCESSING" "$absolute" "stage=meeting-note; using existing transcript"
+    else
+      event "PROCESSING" "$absolute" "stage=transcription"
+    fi
     started_at="$(date +%s)"
     kb_model="$(resolve_kb_model)"
     diagnostics=""
 
-    if diagnostics="$(
-         INPUT_FILE="$absolute" \
-         LANGUAGE="$LANGUAGE" \
-         ENGINE="auto" \
-         OUT_DIR="$transcript_dir" \
-         KB_WHISPER_MODEL="$kb_model" \
-         KB_WHISPER_REVISION="$KB_REVISION" \
-         WHISPER_MODEL="$WHISPER_MODEL" \
-         WHISPER_PRESET="$WHISPER_PRESET" \
-         FFPROBE_TIMEOUT_SECONDS="$FFPROBE_TIMEOUT_SECONDS" \
-         FFMPEG_TIMEOUT_SECONDS="$FFMPEG_TIMEOUT_SECONDS" \
-         "$ROOT_DIR/scripts/start.sh" 2>&1
-       )" \
-       && expected_outputs_exist "$absolute" "$transcript_dir"; then
-      elapsed=$(( $(date +%s) - started_at ))
-      append_state "$absolute" "$size" "$mtime" "$(date +%s)" "completed"
-      event "COMPLETED" "$absolute" "${elapsed}s"
-    else
-      reason="$(failure_reason "$diagnostics")"
-      if grep -q '^AUDIO_PREPARATION_ERROR:' <<< "$diagnostics" 2>/dev/null; then
-        append_state "$absolute" "$size" "$mtime" "$(date +%s)" "unsupported"
-        event "SKIPPED_UNSUPPORTED" "$absolute" "$reason"
-      else
-        append_state "$absolute" "$size" "$mtime" "$(date +%s)" "transcription-failed"
+    if [[ "$reuse_transcript" != "true" ]]; then
+      if ! diagnostics="$(
+           INPUT_FILE="$absolute" \
+           LANGUAGE="$LANGUAGE" \
+           ENGINE="auto" \
+           OUT_DIR="$transcript_dir" \
+           KB_WHISPER_MODEL="$kb_model" \
+           KB_WHISPER_REVISION="$KB_REVISION" \
+           WHISPER_MODEL="$WHISPER_MODEL" \
+           WHISPER_PRESET="$WHISPER_PRESET" \
+           FFPROBE_TIMEOUT_SECONDS="$FFPROBE_TIMEOUT_SECONDS" \
+           FFMPEG_TIMEOUT_SECONDS="$FFMPEG_TIMEOUT_SECONDS" \
+           "$ROOT_DIR/scripts/start.sh" 2>&1
+         )" \
+         || ! expected_outputs_exist "$absolute" "$transcript_dir"; then
+        reason="$(failure_reason "$diagnostics" "transcription failed or expected TXT/JSON output is missing")"
+        if grep -q '^AUDIO_PREPARATION_ERROR:' <<< "$diagnostics" 2>/dev/null; then
+          append_state "$absolute" "$size" "$mtime" "$(date +%s)" "unsupported"
+          event "SKIPPED_UNSUPPORTED" "$absolute" "$reason"
+        else
+          append_state "$absolute" "$size" "$mtime" "$(date +%s)" "transcription-failed"
+          event "FAILED" "$absolute" "$reason"
+          ((failures += 1))
+        fi
+        continue
+      fi
+    fi
+
+    if [[ "$GENERATE_MEETING_NOTE" == "true" ]] \
+       && ! expected_note_outputs_exist "$absolute" "$transcript_dir" "$note_dir"; then
+      diagnostics=""
+      if ! diagnostics="$(generate_meeting_note "$absolute" "$transcript_dir" "$note_dir" 2>&1)" \
+         || ! expected_note_outputs_exist "$absolute" "$transcript_dir" "$note_dir"; then
+        reason="$(failure_reason "$diagnostics" "meeting-note API/DOCX stage failed")"
+        append_state "$absolute" "$size" "$mtime" "$(date +%s)" "note-failed"
         event "FAILED" "$absolute" "$reason"
         ((failures += 1))
+        continue
       fi
+    fi
+
+    elapsed=$(( $(date +%s) - started_at ))
+    append_state "$absolute" "$size" "$mtime" "$(date +%s)" "completed"
+    if [[ "$GENERATE_MEETING_NOTE" == "true" ]]; then
+      event "COMPLETED" "$absolute" "${elapsed}s; transcript+meeting-note"
+    else
+      event "COMPLETED" "$absolute" "${elapsed}s; transcript"
     fi
   done < <(find_candidates)
 

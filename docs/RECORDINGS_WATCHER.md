@@ -3,11 +3,11 @@
 The optional watcher transcribes new supported audio and video files added to
 `/home/jakub-pelka/MobileTransfer/Recordings`. It uses the same local
 `scripts/start.sh` workflow as an interactive transcription. Timestamped TXT and
-JSON results are written to `output_transkrypcja/` next to the recording. Source
-recordings are never changed or removed.
-
-The watcher performs transcription only. It does not call GPT/APIs, summarize,
-generate notes, or run other post-processing.
+JSON results are written to `output_transkrypcja/` next to the recording. The
+default complete workflow then sends timestamped transcript text—not audio—to
+the OpenAI Responses API, verifies the structured draft against source segment
+IDs, and renders a service-note DOCX locally in `Notatki/`. Source recordings
+are never changed or removed.
 
 Supported input extensions are case-insensitive:
 
@@ -21,6 +21,10 @@ decodable audio stream is selected and converted locally to a temporary mono
 stream when present. APAC is considered only when it is the usable local option.
 The temporary WAV is removed after transcription and is never placed in the
 recordings folder.
+
+If a valid transcript already exists while its matching note is absent or based
+on an older transcript hash, the watcher skips Whisper and runs only the
+API/verification/DOCX stage.
 
 ## Install
 
@@ -97,6 +101,21 @@ it. Failed transcriptions are retried after `RETRY_DELAY_SECONDS` when
 `FFPROBE_TIMEOUT_SECONDS` and `FFMPEG_TIMEOUT_SECONDS` prevent damaged or stalled
 media from blocking later recordings.
 
+Meeting-note settings:
+
+```text
+GENERATE_MEETING_NOTE=true
+NOTE_LANGUAGE=sv
+NOTE_DRAFT_MODEL=gpt-5.6-luna
+NOTE_VERIFICATION_MODEL=gpt-5.6-terra
+NOTE_REASONING_EFFORT=medium
+OPENAI_ENV_FILE=/path/to/private/openai.env
+NOTE_DIR_NAME=Notatki
+```
+
+The key file must remain private and outside the repository. Set
+`GENERATE_MEETING_NOTE=false` only when transcription-only behavior is desired.
+
 ## Processing state
 
 State is kept in one append-only TSV file:
@@ -112,10 +131,11 @@ absolute path    size_bytes    mtime_epoch    processed_epoch    status
 ```
 
 Current statuses are `processing`, `completed`, `completed-existing`,
-`transcription-failed`, and `unsupported`; legacy failure statuses remain
-understood. Completed or unsupported files with unchanged size and modification
-time are not attempted again. The runtime lock prevents overlapping path, timer,
-and manual runs.
+`transcription-failed`, `note-failed`, and `unsupported`; legacy failure statuses
+remain understood. `completed` means the expected TXT/JSON and, when enabled,
+the matching DOCX/audit JSON all exist. Completed or unsupported files with
+unchanged size and modification time are not attempted again. The runtime lock
+prevents overlapping path, timer, and manual runs.
 
 ## Stop or disable
 

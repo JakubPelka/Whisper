@@ -1,12 +1,14 @@
 # Whisper
 
 **Status:** ACTIVE / LOCAL TOOLING  
-**Purpose:** local audio transcription, including automatic recording-folder processing.
+**Purpose:** local audio transcription plus automatic grounded service-note DOCX files.
 
 This repository is a small local transcription toolkit. It is not a backup folder and should not contain audio recordings, generated outputs, model caches or secrets.
 
-Audio preparation and transcription remain local. The recordings watcher does
-not call GPT/APIs or run note-generation or other post-processing stages.
+Audio preparation and transcription remain local. After transcription, the
+recordings watcher sends only timestamped transcript text to the OpenAI
+Responses API for a structured draft and an evidence-verification pass. Audio
+is never uploaded by the note stage.
 
 ## Recommended use
 
@@ -268,14 +270,25 @@ Each processed file produces:
 
 The `.txt` file contains the transcription text. The `.json` file keeps metadata and raw model output for later debugging.
 
+With the default watcher profile, a completed transcription also produces:
+
+```text
+Notatki/<recording>_tjansteanteckning.docx
+Notatki/<recording>_tjansteanteckning.note.json
+```
+
+The DOCX is the service note. The audit JSON records transcript hash, source
+segment references, API response IDs, verification warnings, and model usage.
+
 ## Optional automatic recordings watcher
 
 The optional local watcher monitors
 `/home/jakub-pelka/MobileTransfer/Recordings` and transcribes only supported
 files added after installation. Existing recordings are registered as a
 baseline without transcription. Transcripts go into `output_transkrypcja/` and
-source recordings are never modified. New `.qta` files follow the same stable
-copy, local conversion, and transcription path as `.m4a` files.
+grounded service notes go into `Notatki/`; source recordings are never modified.
+New `.qta` files follow the same stable copy, local conversion, transcription,
+API verification, and DOCX path as `.m4a` files.
 
 Install and verify it with:
 
@@ -310,10 +323,23 @@ Change the language/model profile in
 [`docs/RECORDINGS_WATCHER.md`](docs/RECORDINGS_WATCHER.md) for state format,
 retry behavior, supported configuration, and operating details.
 
-### Separate manual meeting-note tool
+### Meeting-note API configuration
 
-Meeting-note generation remains a separate, manually invoked tool and is never
-called by the watcher. If needed for an unrelated workflow, run it explicitly:
+The watcher defaults to the complete flow:
+
+```text
+GENERATE_MEETING_NOTE=true
+NOTE_LANGUAGE=sv
+NOTE_DRAFT_MODEL=gpt-5.6-luna
+NOTE_VERIFICATION_MODEL=gpt-5.6-terra
+NOTE_REASONING_EFFORT=medium
+OPENAI_ENV_FILE=/path/to/private/openai.env
+NOTE_DIR_NAME=Notatki
+```
+
+Keep `OPENAI_API_KEY` outside this repository. When a transcript already exists
+but its matching note is absent or stale, the watcher reuses the transcript and
+runs only the API/DOCX stage. The note tool can also be invoked manually:
 
 ```bash
 ./scripts/generate_meeting_note.sh \
