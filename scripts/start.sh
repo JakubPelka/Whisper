@@ -11,8 +11,9 @@ AUDIO_FIND_MAXDEPTH="${AUDIO_FIND_MAXDEPTH:-1}"
 
 SUPPORTED_FIND_EXPR=(
   -iname '*.wav' -o -iname '*.mp3' -o -iname '*.m4a' -o -iname '*.aac' -o
-  -iname '*.wma' -o -iname '*.ogg' -o -iname '*.flac' -o -iname '*.mkv' -o
-  -iname '*.mp4' -o -iname '*.m4b'
+  -iname '*.wma' -o -iname '*.ogg' -o -iname '*.flac' -o -iname '*.opus' -o
+  -iname '*.qta' -o -iname '*.mp4' -o -iname '*.mov' -o -iname '*.mkv' -o
+  -iname '*.webm' -o -iname '*.avi' -o -iname '*.m4b'
 )
 
 INPUT_PATHS=()
@@ -29,6 +30,14 @@ clean_prompt_path() {
   printf '%s' "$value"
 }
 
+is_supported_input() {
+  local extension="${1##*.}"
+  case "${extension,,}" in
+    wav|mp3|m4a|aac|flac|ogg|opus|qta|mp4|mov|mkv|webm|avi|wma|m4b) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 
 add_input_file() {
   local file_path
@@ -39,6 +48,12 @@ add_input_file() {
   if [[ ! -f "$file_path" ]]; then
     echo "ERROR: input file not found:"
     echo "  $file_path"
+    exit 2
+  fi
+  if ! is_supported_input "$file_path"; then
+    echo "ERROR: unsupported recording format:"
+    echo "  $file_path"
+    echo "Supported: wav mp3 m4a aac flac ogg opus qta mp4 mov mkv webm avi"
     exit 2
   fi
   INPUT_PATHS+=("$file_path")

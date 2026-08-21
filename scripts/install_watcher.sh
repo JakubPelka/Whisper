@@ -39,7 +39,7 @@ fi
 
 cat > "$SYSTEMD_USER_DIR/whisper-recordings-watcher.service" <<UNIT
 [Unit]
-Description=Transcribe recordings locally and create professional meeting notes
+Description=Transcribe new recordings locally
 Wants=network-online.target
 After=default.target network-online.target
 

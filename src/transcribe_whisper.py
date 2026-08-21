@@ -27,6 +27,8 @@ from typing import Any
 import torch
 import whisper
 
+from audio_prepare import AudioPreparationError, prepared_audio
+
 
 PRESETS = {
     "fast": {
@@ -86,6 +88,17 @@ def normalize_language(language: str) -> str | None:
     return language
 
 
+def format_timestamp(seconds: Any) -> str:
+    try:
+        total_ms = int(round(float(seconds or 0) * 1000))
+    except (TypeError, ValueError):
+        total_ms = 0
+    hours, remainder = divmod(total_ms, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    secs, millis = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+
 def save_outputs(
     *,
     input_path: Path,
@@ -105,7 +118,14 @@ def save_outputs(
     json_path = outdir / f"{base_name}.json"
 
     text = (result.get("text") or "").strip()
-    txt_path.write_text(text + "\n", encoding="utf-8")
+    segments = result.get("segments") or []
+    timestamped_lines = [
+        f"[{format_timestamp(segment.get('start'))}–{format_timestamp(segment.get('end'))}] "
+        f"{(segment.get('text') or '').strip()}"
+        for segment in segments
+        if (segment.get("text") or "").strip()
+    ]
+    txt_path.write_text("\n".join(timestamped_lines or [text]) + "\n", encoding="utf-8")
 
     payload = {
         "input": str(input_path),
@@ -115,7 +135,7 @@ def save_outputs(
         "preset": preset,
         "elapsed_seconds": round(elapsed_seconds, 3),
         "text": text,
-        "segments": result.get("segments", []),
+        "segments": segments,
         "raw_result": result,
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -164,17 +184,21 @@ def main() -> int:
         print("=" * 72)
 
         start = time.time()
-        print("")
-        print("Transcribing...")
-
         try:
-            result = model.transcribe(
-                str(input_path),
-                language=language,
-                task="transcribe",
-                fp16=(device == "cuda"),
-                **options,
-            )
+            with prepared_audio(input_path) as prepared:
+                print("")
+                print(
+                    f"Prepared stream {prepared.stream_index} ({prepared.codec}) "
+                    "as temporary mono 16 kHz PCM WAV."
+                )
+                print("Transcribing...")
+                result = model.transcribe(
+                    str(prepared.path),
+                    language=language,
+                    task="transcribe",
+                    fp16=(device == "cuda"),
+                    **options,
+                )
 
             elapsed = time.time() - start
             txt_path, json_path = save_outputs(
@@ -192,6 +216,10 @@ def main() -> int:
             print(f"  {txt_path}")
             print(f"  {json_path}")
             print(f"Elapsed: {elapsed:.1f} s")
+        except AudioPreparationError as exc:
+            failures += 1
+            print(f"AUDIO_PREPARATION_ERROR: {exc.concise_reason}", file=sys.stderr)
+            print(str(exc), file=sys.stderr)
         except Exception as exc:
             failures += 1
             print(f"ERROR while processing {input_path}: {exc}", file=sys.stderr)

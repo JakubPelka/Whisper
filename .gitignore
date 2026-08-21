@@ -21,6 +21,13 @@ outputs/
 *.aac
 *.wma
 *.m4b
+*.opus
+*.qta
+*.mp4
+*.mov
+*.mkv
+*.webm
+*.avi
 processed_files/
 kb_whisper_tests/
 transcriptions/

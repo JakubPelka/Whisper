@@ -9,7 +9,7 @@ CONFIG_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/whisper-recordings-watcher.env"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/whisper-recordings-watcher"
 STATE_FILE="$STATE_DIR/processed.tsv"
 LOG_FILE="$STATE_DIR/watcher.log"
-LOCK_FILE="$STATE_DIR/watcher.lock"
+LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/whisper-recordings-watcher-${UID}.lock"
 
 WATCH_DIR="/home/jakub-pelka/MobileTransfer/Recordings"
 LANGUAGE="sv"
@@ -17,15 +17,9 @@ KB_MODEL="large"
 KB_REVISION="standard"
 WHISPER_MODEL="large-v3-turbo"
 WHISPER_PRESET="fast"
-GENERATE_MEETING_NOTE="true"
-NOTE_LANGUAGE="sv"
-NOTE_DRAFT_MODEL="gpt-5.6-luna"
-NOTE_VERIFICATION_MODEL="gpt-5.6-terra"
-NOTE_REASONING_EFFORT="medium"
-OPENAI_ENV_FILE=""
 TRANSCRIPT_DIR_NAME="output_transkrypcja"
-NOTE_DIR_NAME="Notatki"
-LOG_DIR_NAME="Logi"
+FFPROBE_TIMEOUT_SECONDS="120"
+FFMPEG_TIMEOUT_SECONDS="1800"
 STABILITY_SECONDS="90"
 SCAN_INTERVAL_SECONDS="120"
 RECURSIVE_SCAN="false"
@@ -41,12 +35,8 @@ fi
 # Repository location always comes from this script, never from local config.
 ROOT_DIR="$RESOLVED_ROOT_DIR"
 
-log() {
-  printf '[%(%Y-%m-%dT%H:%M:%S%z)T] %s\n' -1 "$*"
-}
-
 die() {
-  log "ERROR: $*"
+  printf 'ERROR: %s\n' "$*" >&2
   exit 1
 }
 
@@ -67,31 +57,36 @@ normalize_boolean() {
 require_nonnegative_integer "STABILITY_SECONDS" "$STABILITY_SECONDS"
 require_nonnegative_integer "SCAN_INTERVAL_SECONDS" "$SCAN_INTERVAL_SECONDS"
 require_nonnegative_integer "RETRY_DELAY_SECONDS" "$RETRY_DELAY_SECONDS"
+require_nonnegative_integer "FFPROBE_TIMEOUT_SECONDS" "$FFPROBE_TIMEOUT_SECONDS"
+require_nonnegative_integer "FFMPEG_TIMEOUT_SECONDS" "$FFMPEG_TIMEOUT_SECONDS"
 RECURSIVE_SCAN="$(normalize_boolean "$RECURSIVE_SCAN")"
 RETRY_FAILED="$(normalize_boolean "$RETRY_FAILED")"
-GENERATE_MEETING_NOTE="$(normalize_boolean "$GENERATE_MEETING_NOTE")"
-for folder_setting in "$TRANSCRIPT_DIR_NAME" "$NOTE_DIR_NAME"; do
-  [[ -n "$folder_setting" && "$folder_setting" != */* && "$folder_setting" != "." && "$folder_setting" != ".." ]] \
-    || die "output directory names must each be one safe folder name (got: $folder_setting)"
-done
-[[ -n "$LOG_DIR_NAME" && "$LOG_DIR_NAME" != */* && "$LOG_DIR_NAME" != "." && "$LOG_DIR_NAME" != ".." ]] \
-  || die "LOG_DIR_NAME must be one safe folder name (got: $LOG_DIR_NAME)"
+[[ -n "$TRANSCRIPT_DIR_NAME" && "$TRANSCRIPT_DIR_NAME" != */* && \
+   "$TRANSCRIPT_DIR_NAME" != "." && "$TRANSCRIPT_DIR_NAME" != ".." ]] \
+  || die "TRANSCRIPT_DIR_NAME must be one safe folder name (got: $TRANSCRIPT_DIR_NAME)"
 
 [[ -d "$WATCH_DIR" ]] || die "watch directory does not exist: $WATCH_DIR"
 [[ -x "$ROOT_DIR/scripts/start.sh" ]] || die "launcher is missing or not executable: $ROOT_DIR/scripts/start.sh"
 command -v flock >/dev/null 2>&1 || die "flock is required (normally provided by util-linux)"
 
-VISIBLE_LOG_DIR="$WATCH_DIR/$LOG_DIR_NAME"
-RUN_LOG_FILE="$VISIBLE_LOG_DIR/watcher-$(date +%Y%m%d-%H%M%S).log"
-mkdir -p "$STATE_DIR" "$VISIBLE_LOG_DIR"
-touch "$LOG_FILE" "$RUN_LOG_FILE"
-exec > >(tee -a "$LOG_FILE" "$RUN_LOG_FILE") 2>&1
-
+mkdir -p "$STATE_DIR"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
-  log "Another watcher scan is already running; exiting."
   exit 0
 fi
+
+event() {
+  local event_name="$1"
+  local subject="$2"
+  local detail="${3:-}"
+  local timestamp
+  timestamp="$(date --iso-8601=seconds)"
+  if [[ -n "$detail" ]]; then
+    printf '%s\t%s\t%s\t%s\n' "$timestamp" "$event_name" "$subject" "$detail" >> "$LOG_FILE"
+  else
+    printf '%s\t%s\t%s\n' "$timestamp" "$event_name" "$subject" >> "$LOG_FILE"
+  fi
+}
 
 initialize_state_file() {
   if [[ ! -e "$STATE_FILE" ]]; then
@@ -125,8 +120,6 @@ find_candidates() {
   find "$WATCH_DIR" "${maxdepth_args[@]}" -type f \
     -not -path '*/output_transkrypcja/*' \
     -not -path "*/$TRANSCRIPT_DIR_NAME/*" \
-    -not -path "*/$NOTE_DIR_NAME/*" \
-    -not -path "*/$LOG_DIR_NAME/*" \
     -not -path '*/.*' \
     -not -name '*~' \
     -not -iname '*.part' \
@@ -140,8 +133,9 @@ find_candidates() {
     -not -iname '*.crdownload' \
     \( -iname '*.wav' -o -iname '*.mp3' -o -iname '*.m4a' -o \
        -iname '*.aac' -o -iname '*.flac' -o -iname '*.ogg' -o \
-       -iname '*.opus' -o -iname '*.mp4' -o -iname '*.mov' -o \
-       -iname '*.mkv' -o -iname '*.webm' -o -iname '*.avi' \) \
+       -iname '*.opus' -o -iname '*.qta' -o -iname '*.mp4' -o \
+       -iname '*.mov' -o -iname '*.mkv' -o -iname '*.webm' -o \
+       -iname '*.avi' \) \
     -print0 | sort -z
 }
 
@@ -183,77 +177,6 @@ expected_outputs_exist() {
   fi
 }
 
-transcript_json_path() {
-  local file="$1"
-  local out_dir="$2"
-  local stem model_part lang_part base kb_model
-  stem="$(basename -- "$file")"
-  stem="${stem%.*}"
-
-  if [[ "${LANGUAGE,,}" =~ ^(sv|se|swe|swedish|szwedzki)$ ]]; then
-    kb_model="$(resolve_kb_model)"
-    model_part="$(safe_component "${kb_model//\//_}")"
-    base="${stem}_${model_part}_${KB_REVISION}"
-  else
-    model_part="$(safe_component "$WHISPER_MODEL")"
-    lang_part="$LANGUAGE"
-    [[ "${lang_part,,}" == "auto" ]] && lang_part="auto"
-    base="${stem}_openai-whisper_${model_part}_${lang_part}_${WHISPER_PRESET}"
-  fi
-  printf '%s/%s.json' "$out_dir" "$base"
-}
-
-expected_note_outputs_exist() {
-  local file="$1"
-  local transcript_dir="$2"
-  local note_dir="$3"
-  local stem docx_path audit_path transcript_json expected_hash actual_hash
-  stem="$(basename -- "$file")"
-  stem="${stem%.*}"
-  docx_path="$note_dir/${stem}_tjansteanteckning.docx"
-  audit_path="$note_dir/${stem}_tjansteanteckning.note.json"
-  transcript_json="$(transcript_json_path "$file" "$transcript_dir")"
-  [[ -s "$docx_path" && -s "$audit_path" && -s "$transcript_json" ]] || return 1
-
-  expected_hash="$(python3 - "$audit_path" <<'PY_NOTE_HASH'
-import json
-import sys
-
-try:
-    with open(sys.argv[1], encoding="utf-8") as handle:
-        print(json.load(handle).get("transcript_sha256", ""))
-except (OSError, ValueError, TypeError):
-    pass
-PY_NOTE_HASH
-)"
-  actual_hash="$(sha256sum -- "$transcript_json" | awk '{print $1}')"
-  [[ -n "$expected_hash" && "$expected_hash" == "$actual_hash" ]]
-}
-
-generate_meeting_note() {
-  local file="$1"
-  local transcript_dir="$2"
-  local note_dir="$3"
-  local transcript_json prefix
-  transcript_json="$(transcript_json_path "$file" "$transcript_dir")"
-  prefix="$(basename -- "$file")"
-  prefix="${prefix%.*}_tjansteanteckning"
-
-  local args=(
-    --transcript-json "$transcript_json"
-    --outdir "$note_dir"
-    --output-prefix "$prefix"
-    --language "$NOTE_LANGUAGE"
-    --draft-model "$NOTE_DRAFT_MODEL"
-    --verification-model "$NOTE_VERIFICATION_MODEL"
-    --reasoning-effort "$NOTE_REASONING_EFFORT"
-  )
-  if [[ -n "$OPENAI_ENV_FILE" ]]; then
-    args+=(--env-file "$OPENAI_ENV_FILE")
-  fi
-  "$ROOT_DIR/scripts/generate_meeting_note.sh" "${args[@]}"
-}
-
 should_process() {
   local file="$1"
   local size="$2"
@@ -269,7 +192,7 @@ should_process() {
   fi
 
   case "$status" in
-    completed|completed-existing)
+    completed|completed-existing|unsupported)
       return 1
       ;;
     failed|processing|transcription-failed|note-failed)
@@ -284,14 +207,11 @@ should_process() {
   esac
 }
 
-initialize_existing() {
-  local count=0 file metadata size mtime absolute
-  initialize_state_file
-
+register_existing() {
+  local count=0 file absolute metadata size mtime
   while IFS= read -r -d '' file; do
     absolute="$(readlink -f -- "$file")"
     if [[ "$absolute" == *$'\t'* || "$absolute" == *$'\n'* ]]; then
-      log "Skipping path that cannot be represented safely in TSV state: $absolute"
       continue
     fi
     metadata="$(file_metadata "$absolute")"
@@ -301,70 +221,75 @@ initialize_existing() {
       ((count += 1))
     fi
   done < <(find_candidates)
+  printf '%s' "$count"
+}
 
-  log "Initialization complete: registered $count existing supported recording(s); no transcription was run."
+initialize_existing() {
+  local count
+  initialize_state_file
+  count="$(register_existing)"
+  event "BASELINE" "$WATCH_DIR" "registered=$count"
+}
+
+repair_missing_state() {
+  local count
+  initialize_state_file
+  count="$(register_existing)"
+  event "STATE_REPAIR" "$STATE_FILE" "created missing state; baseline registered=$count"
+}
+
+failure_reason() {
+  local diagnostics="$1"
+  local reason
+  reason="$(grep -m1 '^AUDIO_PREPARATION_ERROR:' <<< "$diagnostics" 2>/dev/null || true)"
+  if [[ -z "$reason" ]]; then
+    reason="$(grep -E '^(ERROR|ERROR while processing)' <<< "$diagnostics" 2>/dev/null | tail -1 || true)"
+  fi
+  [[ -n "$reason" ]] || reason="transcription exited unsuccessfully or expected TXT/JSON output is missing"
+  reason="$(printf '%s' "$reason" | tr '\t\r\n' ' ' | cut -c1-500)"
+  printf '%s' "$reason"
 }
 
 run_scan() {
-  local found=0 processed=0 skipped=0 unstable=0 failed=0
-  local file absolute first_metadata second_metadata size mtime transcript_dir note_dir kb_model
-  local previous_state previous_size previous_mtime previous_processed previous_status
-  local reuse_transcript
-  initialize_state_file
-  log "Starting scan of $WATCH_DIR (recursive=$RECURSIVE_SCAN)."
+  local failures=0
+  local file absolute first_metadata second_metadata size mtime transcript_dir kb_model
+  local started_at elapsed reason diagnostics
+
+  if [[ ! -e "$STATE_FILE" ]]; then
+    repair_missing_state
+    return 0
+  fi
 
   while IFS= read -r -d '' file; do
-    ((found += 1))
     absolute="$(readlink -f -- "$file")"
     if [[ "$absolute" == *$'\t'* || "$absolute" == *$'\n'* ]]; then
-      log "Skipping path that cannot be represented safely in TSV state: $absolute"
-      ((skipped += 1))
       continue
     fi
 
     first_metadata="$(file_metadata "$absolute")" || continue
     IFS=$'\t' read -r size mtime <<< "$first_metadata"
     if ! should_process "$absolute" "$size" "$mtime"; then
-      ((skipped += 1))
       continue
     fi
 
-    log "Checking file stability for $STABILITY_SECONDS second(s): $absolute"
     sleep "$STABILITY_SECONDS"
     if [[ ! -f "$absolute" ]]; then
-      log "File disappeared during stability check; deferring: $absolute"
-      ((unstable += 1))
       continue
     fi
     second_metadata="$(file_metadata "$absolute")"
     if [[ "$first_metadata" != "$second_metadata" ]]; then
-      log "File is still changing; deferring until a later scan: $absolute"
-      ((unstable += 1))
       continue
     fi
 
-    previous_state="$(latest_state "$absolute")"
-    previous_size=""
-    previous_mtime=""
-    previous_processed=""
-    previous_status=""
-    if [[ -n "$previous_state" ]]; then
-      IFS=$'\t' read -r previous_size previous_mtime previous_processed previous_status <<< "$previous_state"
-    fi
-    reuse_transcript="false"
-    if [[ "$previous_size" == "$size" && "$previous_mtime" == "$mtime" && \
-          "$previous_status" =~ ^(note-failed|processing)$ ]]; then
-      reuse_transcript="true"
-    fi
-
     transcript_dir="$(dirname -- "$absolute")/$TRANSCRIPT_DIR_NAME"
-    note_dir="$(dirname -- "$absolute")/$NOTE_DIR_NAME"
     append_state "$absolute" "$size" "$mtime" "$(date +%s)" "processing"
-    log "Transcribing: $absolute"
-
+    event "PROCESSING" "$absolute"
+    started_at="$(date +%s)"
     kb_model="$(resolve_kb_model)"
-    if [[ "$reuse_transcript" != "true" ]] || ! expected_outputs_exist "$absolute" "$transcript_dir"; then
-      if ! INPUT_FILE="$absolute" \
+    diagnostics=""
+
+    if diagnostics="$(
+         INPUT_FILE="$absolute" \
          LANGUAGE="$LANGUAGE" \
          ENGINE="auto" \
          OUT_DIR="$transcript_dir" \
@@ -372,35 +297,28 @@ run_scan() {
          KB_WHISPER_REVISION="$KB_REVISION" \
          WHISPER_MODEL="$WHISPER_MODEL" \
          WHISPER_PRESET="$WHISPER_PRESET" \
-         "$ROOT_DIR/scripts/start.sh" || ! expected_outputs_exist "$absolute" "$transcript_dir"; then
-        append_state "$absolute" "$size" "$mtime" "$(date +%s)" "transcription-failed"
-        log "FAILED: transcription exited unsuccessfully or expected TXT/JSON output is missing: $absolute"
-        ((failed += 1))
-        continue
-      fi
+         FFPROBE_TIMEOUT_SECONDS="$FFPROBE_TIMEOUT_SECONDS" \
+         FFMPEG_TIMEOUT_SECONDS="$FFMPEG_TIMEOUT_SECONDS" \
+         "$ROOT_DIR/scripts/start.sh" 2>&1
+       )" \
+       && expected_outputs_exist "$absolute" "$transcript_dir"; then
+      elapsed=$(( $(date +%s) - started_at ))
+      append_state "$absolute" "$size" "$mtime" "$(date +%s)" "completed"
+      event "COMPLETED" "$absolute" "${elapsed}s"
     else
-      log "Retrying note stage with the existing transcript for the same source version; Whisper will not run again: $absolute"
-    fi
-
-    if [[ "$GENERATE_MEETING_NOTE" == "true" ]]; then
-      if ! expected_note_outputs_exist "$absolute" "$transcript_dir" "$note_dir"; then
-        log "Generating professional meeting-note DOCX from local transcript: $absolute"
-        if ! generate_meeting_note "$absolute" "$transcript_dir" "$note_dir" || ! expected_note_outputs_exist "$absolute" "$transcript_dir" "$note_dir"; then
-          append_state "$absolute" "$size" "$mtime" "$(date +%s)" "note-failed"
-          log "FAILED: meeting-note API/DOCX stage failed; local transcript is preserved for retry: $absolute"
-          ((failed += 1))
-          continue
-        fi
+      reason="$(failure_reason "$diagnostics")"
+      if grep -q '^AUDIO_PREPARATION_ERROR:' <<< "$diagnostics" 2>/dev/null; then
+        append_state "$absolute" "$size" "$mtime" "$(date +%s)" "unsupported"
+        event "SKIPPED_UNSUPPORTED" "$absolute" "$reason"
+      else
+        append_state "$absolute" "$size" "$mtime" "$(date +%s)" "transcription-failed"
+        event "FAILED" "$absolute" "$reason"
+        ((failures += 1))
       fi
     fi
-
-    append_state "$absolute" "$size" "$mtime" "$(date +%s)" "completed"
-    log "Completed: $absolute"
-    ((processed += 1))
   done < <(find_candidates)
 
-  log "Scan complete: found=$found processed=$processed skipped=$skipped unstable=$unstable failed=$failed."
-  (( failed == 0 ))
+  (( failures == 0 ))
 }
 
 case "${1:-}" in

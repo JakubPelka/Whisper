@@ -21,15 +21,15 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
 
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+
+from audio_prepare import AudioPreparationError, prepared_audio
 
 
 DEFAULT_MODEL = os.environ.get("KB_WHISPER_MODEL", "KBLab/kb-whisper-large")
@@ -47,10 +47,6 @@ def resolve_hf_cache_dir() -> str:
     path = Path(value).expanduser().resolve()
     path.mkdir(parents=True, exist_ok=True)
     return str(path)
-
-
-def run(cmd: list[str], *, timeout: int | None = None) -> None:
-    subprocess.run(cmd, check=True, timeout=timeout)
 
 
 def clean_path(value: str) -> Path:
@@ -129,24 +125,6 @@ def format_readable_txt(
 
     lines.append("")
     return "\n".join(lines)
-
-
-def ffmpeg_to_wav16k_mono(input_path: Path, tmp_dir: Path) -> Path:
-    out_wav = tmp_dir / f"{input_path.stem}_16k_mono.wav"
-    run([
-        "ffmpeg",
-        "-nostdin",
-        "-y",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-i", str(input_path),
-        "-map", "0:a:0",
-        "-vn",
-        "-ac", "1",
-        "-ar", "16000",
-        str(out_wav),
-    ], timeout=int(os.environ.get("FFMPEG_TIMEOUT_SECONDS", "1800")))
-    return out_wav
 
 
 def resolve_device(force_cpu: bool) -> tuple[str, torch.dtype]:
@@ -282,14 +260,15 @@ def main() -> int:
         start = time.time()
 
         try:
-            with tempfile.TemporaryDirectory(prefix="kb_whisper_") as td:
-                tmp_dir = Path(td)
-                wav_path = ffmpeg_to_wav16k_mono(input_path, tmp_dir)
-
+            with prepared_audio(input_path) as prepared:
                 print("")
+                print(
+                    f"Prepared stream {prepared.stream_index} ({prepared.codec}) "
+                    "as temporary mono 16 kHz PCM WAV."
+                )
                 print("Transcribing...")
                 result = asr(
-                    str(wav_path),
+                    str(prepared.path),
                     chunk_length_s=args.chunk_length,
                     batch_size=args.batch_size,
                     return_timestamps=True,
@@ -315,6 +294,10 @@ def main() -> int:
             print(f"  {txt_path}")
             print(f"  {json_path}")
             print(f"Elapsed: {elapsed:.1f} s")
+        except AudioPreparationError as exc:
+            failures += 1
+            print(f"AUDIO_PREPARATION_ERROR: {exc.concise_reason}", file=sys.stderr)
+            print(str(exc), file=sys.stderr)
         except Exception as exc:
             failures += 1
             print(f"ERROR while processing {input_path}: {exc}", file=sys.stderr)
