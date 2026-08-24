@@ -10,6 +10,10 @@ recordings watcher sends only timestamped transcript text to the OpenAI
 Responses API for a structured draft and an evidence-verification pass. Audio
 is never uploaded by the note stage.
 
+## Mobile development
+
+The iOS/mobile product direction has moved to [`JakubPelka/antek`](https://github.com/JakubPelka/antek). This repository remains focused on the existing local transcription and note-generation workflow; the mobile architecture and roadmap live in `antek/MobileNotes.md`.
+
 ## Recommended use
 
 Use one main launcher:
