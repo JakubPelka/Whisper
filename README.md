@@ -355,6 +355,50 @@ runs only the API/DOCX stage. The note tool can also be invoked manually:
   --env-file /path/to/private/openai.env
 ```
 
+### Private Antek text API
+
+The same Luna → Terra engine is exposed through a small authenticated API. It
+accepts complete transcript segments, optional meeting context and a note
+preset. It has no audio or file-upload field. Context and preset remain
+background/output intent; numbered transcript segments are the sole evidence.
+
+Required environment variables:
+
+```text
+OPENAI_API_KEY=...
+ANTEK_API_TOKEN=...
+```
+
+Optional configuration:
+
+```text
+ANTEK_API_HOST=127.0.0.1
+ANTEK_API_PORT=8080
+ANTEK_AUDIT_DIR=/private/path/antek-audit
+ANTEK_DRAFT_MODEL=gpt-5.6-luna
+ANTEK_VERIFICATION_MODEL=gpt-5.6-terra
+ANTEK_REASONING_EFFORT=medium
+```
+
+Start the server from a process environment or service-level private
+environment file:
+
+```bash
+OPENAI_API_KEY=... ANTEK_API_TOKEN=... ./scripts/run_antek_note_api.sh
+```
+
+Endpoints:
+
+```text
+GET  /healthz
+POST /v1/notes/generate   Authorization: Bearer <ANTEK_API_TOKEN>
+```
+
+When `ANTEK_AUDIT_DIR` is configured, successful calls save response IDs,
+separate raw Luna/Terra usage, verification results, the final structured note
+and a SHA-256 of the canonical transcript. Raw audio never arrives and the full
+transcript is not retained in the audit record.
+
 ## Requirements
 
 System packages:

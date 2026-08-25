@@ -1,4 +1,7 @@
 # OpenAI Responses API with Pydantic Structured Outputs and local DOCX rendering.
 openai>=2.0,<3
 pydantic>=2.8,<3
+eval-type-backport>=0.2,<1; python_version < "3.10"
 python-docx>=1.1,<2
+fastapi>=0.115,<1
+uvicorn>=0.30,<1

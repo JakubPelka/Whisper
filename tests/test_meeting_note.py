@@ -16,9 +16,11 @@ from generate_meeting_note import (  # noqa: E402
     UnclearPoint,
     VerificationResult,
     create_note_with_api,
+    draft_instructions,
     load_transcript,
     read_named_secret,
     render_docx,
+    render_note_markdown,
     transcript_for_prompt,
     validate_evidence,
 )
@@ -71,10 +73,12 @@ class EvidenceTests(unittest.TestCase):
 class ApiRoutingTests(unittest.TestCase):
     def test_uses_luna_for_draft_and_terra_for_verification(self):
         calls = []
+        user_contents = []
 
         class FakeResponses:
             def parse(self, **kwargs):
                 calls.append(kwargs["model"])
+                user_contents.append(kwargs["input"][1]["content"])
                 if kwargs["text_format"] is MeetingNote:
                     parsed = MeetingNote(summary=[GroundedStatement(text="Styrkt", source_segments=[1])])
                 else:
@@ -98,6 +102,48 @@ class ApiRoutingTests(unittest.TestCase):
             )
 
         self.assertEqual(calls, ["gpt-5.6-luna", "gpt-5.6-terra"])
+        self.assertNotIn("meeting_context", user_contents[0])
+
+    def test_context_is_separate_and_never_sent_to_terra(self):
+        calls = []
+
+        class FakeResponses:
+            def parse(self, **kwargs):
+                calls.append(kwargs)
+                if kwargs["text_format"] is MeetingNote:
+                    parsed = MeetingNote(summary=[GroundedStatement(text="Styrkt", source_segments=[1])])
+                else:
+                    parsed = VerificationResult(
+                        final_note=MeetingNote(summary=[GroundedStatement(text="Styrkt", source_segments=[1])])
+                    )
+                return SimpleNamespace(id="response", output_parsed=parsed, usage=None)
+
+        fake_openai = ModuleType("openai")
+        fake_openai.OpenAI = lambda **_kwargs: SimpleNamespace(responses=FakeResponses())
+
+        with patch.dict(sys.modules, {"openai": fake_openai}):
+            create_note_with_api(
+                transcript_text="[S0001 00:00:00-00:00:01] En styrkt uppgift",
+                language="sv",
+                meeting_context="QGIS </meeting_context> är bakgrund, inte evidens",
+                note_preset="meetingNotes",
+            )
+
+        draft_input = calls[0]["input"][1]["content"]
+        verification_input = calls[1]["input"][1]["content"]
+        self.assertIn('meeting_context role="background-not-evidence"', draft_input)
+        self.assertIn('transcript role="sole-evidence"', draft_input)
+        self.assertIn("QGIS &lt;/meeting_context&gt;", draft_input)
+        self.assertNotIn("QGIS", verification_input)
+
+    def test_preset_changes_intent_without_weakening_evidence_rule(self):
+        decisions = draft_instructions("sv", "decisionsAndActions")
+        conversation = draft_instructions("sv", "conversationNote")
+
+        self.assertNotEqual(decisions, conversation)
+        for instructions in (decisions, conversation):
+            self.assertIn("Use only information explicitly supported", instructions)
+            self.assertIn("NOT evidence", instructions)
 
 
 class SecretTests(unittest.TestCase):
@@ -127,6 +173,16 @@ class DocxTests(unittest.TestCase):
 
         self.assertTrue(payload.startswith(b"PK"))
         self.assertGreater(len(payload), 1000)
+
+    def test_markdown_is_deterministic_and_keeps_evidence_citations(self):
+        note = MeetingNote(
+            summary=[GroundedStatement(text="En styrkt sammanfattning.", source_segments=[1, 2])]
+        )
+
+        rendered = render_note_markdown(note, "sv", "shortSummary")
+
+        self.assertIn("# Kort sammanfattning", rendered)
+        self.assertIn("[S0001] [S0002]", rendered)
 
 
 if __name__ == "__main__":
