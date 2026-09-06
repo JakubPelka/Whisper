@@ -366,7 +366,8 @@ Required environment variables:
 
 ```text
 OPENAI_API_KEY=...
-ANTEK_API_TOKEN=...
+ANTEK_BOOTSTRAP_TOKEN=...
+ANTEK_LEDGER_DB=/private/durable/path/antek-processing-ledger.sqlite3
 ```
 
 Optional configuration:
@@ -378,21 +379,46 @@ ANTEK_AUDIT_DIR=/private/path/antek-audit
 ANTEK_DRAFT_MODEL=gpt-5.6-luna
 ANTEK_VERIFICATION_MODEL=gpt-5.6-terra
 ANTEK_REASONING_EFFORT=medium
+ANTEK_PRIVATE_ALPHA_INCLUDED_CREDITS=100000
+ANTEK_CALIBRATION_VERSION=private-alpha-v1
+ANTEK_PIPELINE_VERSION=luna-terra-v1
+ANTEK_PRICING_VERSION=private-alpha-v1
+ANTEK_ADMIN_TOKEN=...                 # aggregate non-content statistics only
 ```
 
 Start the server from a process environment or service-level private
 environment file:
 
 ```bash
-OPENAI_API_KEY=... ANTEK_API_TOKEN=... ./scripts/run_antek_note_api.sh
+OPENAI_API_KEY=... ANTEK_BOOTSTRAP_TOKEN=... ANTEK_LEDGER_DB=/private/path/antek.sqlite3 ./scripts/run_antek_note_api.sh
 ```
 
 Endpoints:
 
 ```text
 GET  /healthz
-POST /v1/notes/generate   Authorization: Bearer <ANTEK_API_TOKEN>
+POST /v1/auth/bootstrap   X-Antek-Bootstrap: <temporary private-alpha bootstrap secret>
+GET  /v1/me/credits       Authorization: Bearer <per-installation Antek credential>
+POST /v1/notes/generate   Authorization: Bearer <per-installation Antek credential>
+                           Idempotency-Key: <request_id>
+GET  /v1/internal/processing-stats  X-Antek-Admin: <admin credential>
 ```
+
+The bootstrap secret is only a private-alpha migration bridge. The app exchanges
+it once for an opaque per-installation credential stored in iOS Keychain; it is
+never accepted by the Generate endpoint. The backend assigns credits to an
+anonymous subject, while installation is merely a child technical record. This
+allows a later account/StoreKit claim flow to keep the same ledger. Anonymous
+credentials are acceptable only for private-alpha grants: paid value must not be
+made unrecoverable until that account-claim path exists.
+
+The SQLite ledger is append-only and authoritative. Processing records contain
+only duration, byte/character counts, language, preset, model/pipeline/pricing
+versions, provider usage, cost, status and credits. They do not contain meeting
+text, titles, filenames, vocabulary or hashes of content. The app shows a local
+pre-Generate estimate split into transcript/context/reference credits; it uses
+only locally measured sizes and a versioned conservative calibration. The final
+charge is calculated after provider work. Internal statistics are aggregate-only.
 
 When `ANTEK_AUDIT_DIR` is configured, successful calls save response IDs,
 separate raw Luna/Terra usage, verification results, the final structured note
