@@ -617,7 +617,11 @@ async def generate_note_endpoint(
     subject_id: str = Depends(require_subject),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> GenerateNoteResponse:
-    if idempotency_key != str(request.request_id):
+    try:
+        idempotency_request_id = UUID(idempotency_key) if idempotency_key else None
+    except ValueError:
+        idempotency_request_id = None
+    if idempotency_request_id != request.request_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Idempotency-Key must equal request_id")
     connection = database()
     started = time.monotonic()
