@@ -23,6 +23,7 @@ from generate_meeting_note import (  # noqa: E402
     render_note_markdown,
     transcript_for_prompt,
     validate_evidence,
+    verification_instructions,
 )
 
 
@@ -174,15 +175,34 @@ class DocxTests(unittest.TestCase):
         self.assertTrue(payload.startswith(b"PK"))
         self.assertGreater(len(payload), 1000)
 
-    def test_markdown_is_deterministic_and_keeps_evidence_citations(self):
+    def test_markdown_is_natural_and_hides_internal_evidence_citations(self):
         note = MeetingNote(
-            summary=[GroundedStatement(text="En styrkt sammanfattning.", source_segments=[1, 2])]
+            summary=[
+                GroundedStatement(text="En styrkt sammanfattning.", source_segments=[1, 2]),
+                GroundedStatement(text="En annan relevant del av diskussionen.", source_segments=[3]),
+            ],
+            decisions=[GroundedStatement(text="Ett styrkt beslut.", source_segments=[4])],
         )
 
         rendered = render_note_markdown(note, "sv", "shortSummary")
 
         self.assertIn("# Kort sammanfattning", rendered)
-        self.assertIn("[S0001] [S0002]", rendered)
+        self.assertIn("En styrkt sammanfattning.", rendered)
+        self.assertNotIn("[S0001]", rendered)
+        self.assertNotIn("- En styrkt sammanfattning.", rendered)
+        self.assertIn("- Ett styrkt beslut.", rendered)
+
+
+class NaturalNotesPromptTests(unittest.TestCase):
+    def test_prompts_keep_grounding_but_require_natural_prose(self):
+        draft = draft_instructions("sv", "meetingNotes")
+        verification = verification_instructions("sv", "meetingNotes")
+
+        self.assertIn("Every substantive structured item must include", draft)
+        self.assertIn("not reader-facing prose", draft)
+        self.assertIn("Vi gick igenom", draft)
+        self.assertIn("Normally do this silently", verification)
+        self.assertIn("Preserve good coherent prose", verification)
 
 
 if __name__ == "__main__":

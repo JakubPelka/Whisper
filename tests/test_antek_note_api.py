@@ -212,12 +212,14 @@ class EngineIntegrationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         connection = sqlite3.connect(self.database_path)
         row = connection.execute(
-            "SELECT recording_duration_seconds, transcript_utf8_bytes, context_utf8_bytes, credits_charged FROM processing_operations"
+            """SELECT recording_duration_seconds, transcript_utf8_bytes, context_utf8_bytes,
+                      credits_charged, pipeline_version FROM processing_operations"""
         ).fetchone()
         self.assertEqual(row[0], 42)
         self.assertGreater(row[1], 0)
         self.assertEqual(row[2], len("Private context".encode("utf-8")))
         self.assertGreater(row[3], 0)
+        self.assertEqual(row[4], "luna-terra-v2-natural-notes")
         serialized_rows = "\n".join(str(value) for value in connection.execute(
             """SELECT operation_id, subject_id, status, recording_duration_seconds, transcript_utf8_bytes,
                       transcript_character_count, context_present, context_utf8_bytes, note_preset,

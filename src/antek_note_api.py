@@ -655,7 +655,7 @@ async def generate_note_endpoint(
                 str(request.request_id), subject_id, utc_now(), request.recording_duration_seconds,
                 byte_count(transcript_text), len(transcript_text), int(context_bytes > 0), context_bytes,
                 request.note_preset, request.language,
-                os.environ.get("ANTEK_PIPELINE_VERSION", "luna-terra-v1"),
+                os.environ.get("ANTEK_PIPELINE_VERSION", "luna-terra-v2-natural-notes"),
                 os.environ.get("ANTEK_PRICING_VERSION", "private-alpha-v1"), estimate.total_credits,
             ),
         )
