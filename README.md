@@ -381,7 +381,7 @@ ANTEK_VERIFICATION_MODEL=gpt-5.6-terra
 ANTEK_REASONING_EFFORT=medium
 ANTEK_PRIVATE_ALPHA_INCLUDED_CREDITS=100000
 ANTEK_CALIBRATION_VERSION=private-alpha-v1
-ANTEK_PIPELINE_VERSION=luna-terra-v2-natural-notes
+ANTEK_PIPELINE_VERSION=luna-terra-v3-natural-notes
 ANTEK_PRICING_VERSION=private-alpha-v1
 ANTEK_ADMIN_TOKEN=...                 # aggregate non-content statistics only
 ```

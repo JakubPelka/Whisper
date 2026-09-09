@@ -106,6 +106,10 @@ class RequestSchemaTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in segments], [1, 2])
         self.assertEqual([item["text"] for item in segments], ["Första segmentet.", "Andra segmentet."])
 
+    def test_accepts_presentation_summary_preset(self):
+        request = GenerateNoteRequest.model_validate(request_payload(preset="presentationSummary"))
+        self.assertEqual(request.note_preset, "presentationSummary")
+
 
 class EngineIntegrationTests(unittest.TestCase):
     def setUp(self):
@@ -219,7 +223,7 @@ class EngineIntegrationTests(unittest.TestCase):
         self.assertGreater(row[1], 0)
         self.assertEqual(row[2], len("Private context".encode("utf-8")))
         self.assertGreater(row[3], 0)
-        self.assertEqual(row[4], "luna-terra-v2-natural-notes")
+        self.assertEqual(row[4], "luna-terra-v3-natural-notes")
         serialized_rows = "\n".join(str(value) for value in connection.execute(
             """SELECT operation_id, subject_id, status, recording_duration_seconds, transcript_utf8_bytes,
                       transcript_character_count, context_present, context_utf8_bytes, note_preset,

@@ -11,8 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from generate_meeting_note import (  # noqa: E402
+    ActionItem,
     GroundedStatement,
     MeetingNote,
+    ThematicSection,
     UnclearPoint,
     VerificationResult,
     create_note_with_api,
@@ -140,11 +142,15 @@ class ApiRoutingTests(unittest.TestCase):
     def test_preset_changes_intent_without_weakening_evidence_rule(self):
         decisions = draft_instructions("sv", "decisionsAndActions")
         conversation = draft_instructions("sv", "conversationNote")
+        presentation = draft_instructions("sv", "presentationSummary")
 
         self.assertNotEqual(decisions, conversation)
-        for instructions in (decisions, conversation):
+        self.assertNotEqual(conversation, presentation)
+        for instructions in (decisions, conversation, presentation):
             self.assertIn("Use only information explicitly supported", instructions)
             self.assertIn("NOT evidence", instructions)
+        self.assertIn("conference session", presentation)
+        self.assertIn("not meeting minutes", presentation)
 
 
 class SecretTests(unittest.TestCase):
@@ -194,15 +200,69 @@ class DocxTests(unittest.TestCase):
 
 
 class NaturalNotesPromptTests(unittest.TestCase):
-    def test_prompts_keep_grounding_but_require_natural_prose(self):
+    def test_v3_meeting_prompts_keep_grounding_and_require_completeness(self):
         draft = draft_instructions("sv", "meetingNotes")
         verification = verification_instructions("sv", "meetingNotes")
 
         self.assertIn("Every substantive structured item must include", draft)
         self.assertIn("not reader-facing prose", draft)
         self.assertIn("Vi gick igenom", draft)
+        self.assertIn("substantive completeness", draft)
+        self.assertIn("thematic_sections", draft)
         self.assertIn("Normally do this silently", verification)
         self.assertIn("Preserve good coherent prose", verification)
+        self.assertIn("Completeness pass", verification)
+        self.assertIn("grounded content that Luna omitted", verification)
+
+    def test_presentation_verification_is_selective_but_grounded(self):
+        verification = verification_instructions("sv", "presentationSummary")
+
+        self.assertIn("Presentation-summary review", verification)
+        self.assertIn("Completeness means preserving the important message", verification)
+        self.assertIn("audience speculation", verification)
+
+
+class ThematicRenderingTests(unittest.TestCase):
+    def test_thematic_meeting_note_avoids_legacy_generic_sections(self):
+        note = MeetingNote(
+            thematic_sections=[
+                ThematicSection(
+                    heading="GIS- och 3D-underlag",
+                    paragraphs=[GroundedStatement(text="Underlaget behöver kvalitetssäkras före leverans.", source_segments=[1])],
+                ),
+            ],
+            actions=[ActionItem(task="Ta fram ett kvalitetssäkrat underlag.", source_segments=[2])],
+        )
+
+        rendered = render_note_markdown(note, "sv", "meetingNotes")
+
+        self.assertIn("## GIS- och 3D-underlag", rendered)
+        self.assertIn("## Åtgärder", rendered)
+        self.assertNotIn("## Sakuppgifter", rendered)
+        self.assertNotIn("## Oklarheter", rendered)
+        self.assertNotIn("[S0001]", rendered)
+
+    def test_presentation_summary_uses_thematic_sections_and_hides_evidence(self):
+        note = MeetingNote(
+            thematic_sections=[
+                ThematicSection(
+                    heading="Viktigaste punkterna",
+                    bullet_points=[GroundedStatement(text="Öppna data förenklar återanvändning mellan kommuner.", source_segments=[1])],
+                ),
+                ThematicSection(
+                    heading="Take-home messages",
+                    paragraphs=[GroundedStatement(text="Börja med gemensamma format och tydligt ägarskap.", source_segments=[2])],
+                ),
+            ],
+        )
+
+        rendered = render_note_markdown(note, "sv", "presentationSummary")
+
+        self.assertIn("# Presentationssammanfattning", rendered)
+        self.assertIn("## Viktigaste punkterna", rendered)
+        self.assertIn("- Öppna data", rendered)
+        self.assertNotIn("## Beslut", rendered)
+        self.assertNotIn("[S0001]", rendered)
 
 
 if __name__ == "__main__":
