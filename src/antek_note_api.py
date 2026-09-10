@@ -323,16 +323,21 @@ def transcript_text_for_measurement(request: GenerateNoteRequest) -> str:
 
 
 def pipeline_version_for(note_preset: NotePreset) -> str:
-    """Keep meeting v4 and the unchanged presentation preset distinguishable."""
+    """Keep independently tuned note presets distinguishable in usage records."""
     if note_preset == "meetingNotes":
         return os.environ.get(
             "ANTEK_MEETING_PIPELINE_VERSION",
             "luna-terra-v4-natural-notes",
         )
+    if note_preset == "shortSummary":
+        return os.environ.get(
+            "ANTEK_SHORT_SUMMARY_PIPELINE_VERSION",
+            "luna-terra-v2-short-summary",
+        )
     if note_preset == "presentationSummary":
         return os.environ.get(
             "ANTEK_PRESENTATION_PIPELINE_VERSION",
-            "luna-terra-v3-presentation-summary",
+            "luna-terra-v2-presentation-summary",
         )
     return os.environ.get("ANTEK_PIPELINE_VERSION", "luna-terra-v3-natural-notes")
 

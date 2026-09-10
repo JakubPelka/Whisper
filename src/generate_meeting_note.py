@@ -180,7 +180,10 @@ NOTE_PRESET_INSTRUCTIONS = {
     "conversationNote": (
         "Use a neutral, thematic account in coherent prose. Do not force decisions or action items."
     ),
-    "shortSummary": "Use compact prose with only necessary headings and focus on the most important supported points.",
+    "shortSummary": (
+        "Create a brief, grounded reader-facing summary that preserves only the core message, "
+        "strongest points, and an essential conclusion or next step when useful."
+    ),
     "presentationSummary": (
         "Create a concise, transferable summary of a presentation, lecture, briefing, or conference session "
         "for a colleague who was not present. Focus on the central message, the strongest key points, material "
@@ -264,6 +267,7 @@ Grounding rules are strict:
   creative summary. Grounding constrains what may be written; it must not make
   the finished note sound like an evidence report.
 {meeting_v4_draft_instructions(note_preset)}
+{short_summary_draft_instructions(note_preset)}
 {presentation_draft_instructions(note_preset)}
 """.strip()
 
@@ -303,6 +307,37 @@ Natural Notes v4 meeting-note delta:
 """.strip()
 
 
+def short_summary_draft_instructions(note_preset: str) -> str:
+    if note_preset != "shortSummary":
+        return ""
+    return """
+
+Short Summary v2 preset:
+- This is a brief summary, not meeting minutes, a protocol, an audit report, or
+  a mini-transcript. Answer quickly: what the recording was mainly about, the
+  few most important things worth knowing, and any essential supported
+  conclusion, consequence, or next step.
+- Put the whole reader-facing body in summary. Use one short framing paragraph
+  followed by a few compact substantive points in natural professional prose.
+  Prefer roughly 3–6 points, but use fewer for simple material and never pad.
+- For a normal meeting or transcript, aim for roughly half an A4 page and keep
+  within about two-thirds of an A4 page: approximately 250–400 words depending
+  on language and formatting. Shorter is better when the source is simple.
+- Be intentionally selective. Keep only information genuinely needed to
+  understand the core message. Omit greetings, setup talk, jokes, repetition,
+  filler, side tangents, secondary detail, and grounded details that do not
+  materially improve the summary.
+- Do not create participant, background/purpose, facts, decisions, actions,
+  open-question, unclear-point, or thematic sections. If a decision, action,
+  open issue, owner, or deadline is essential, integrate only its useful
+  substance naturally into summary rather than exposing a structured field.
+- Never write source markers, transcript segment IDs, evidence timestamps, or
+  verification/model commentary in reader-facing text. Keep source_segments as
+  internal structured metadata. Silently omit or narrow unsupported details.
+- Avoid repetition: each retained idea belongs in one place only.
+""".strip()
+
+
 def presentation_draft_instructions(note_preset: str) -> str:
     if note_preset != "presentationSummary":
         return ""
@@ -325,6 +360,15 @@ Presentation-summary preset:
   If post-talk Q&A adds substantive clarification, create a separate thematic
   section for it. Do not turn an audience comment into a presenter conclusion,
   and do not invent attribution when speaker identity is uncertain.
+- Presentation Summary v2 style delta: use natural or impersonal prose by
+  default. Because the document already summarizes a talk, do not repeatedly
+  begin sentences with "the presenter", "the speaker", a name, or pronouns such
+  as he/she merely to restate that the content came from the talk.
+- Keep explicit speaker attribution only when it materially distinguishes the
+  speaker's interpretation from a cited report or study, separates the main talk
+  from audience comments or Q&A, distinguishes multiple panelists, or preserves
+  an important source caveat. Integrate that distinction into normal prose; do
+  not append a verification-style explanation about whose interpretation it was.
 """.strip()
 
 
@@ -366,6 +410,7 @@ It may affect emphasis and ordering, but it is not evidence.
   content, then natural professional readability. Source segment IDs remain
   internal metadata and must stay attached to every substantive item.
 {meeting_v4_verification_instructions(note_preset)}
+{short_summary_verification_instructions(note_preset)}
 {presentation_verification_instructions(note_preset)}
 """.strip()
 
@@ -407,6 +452,36 @@ Natural Notes v4 meeting-note coverage and cleanup:
 """.strip()
 
 
+def short_summary_verification_instructions(note_preset: str) -> str:
+    if note_preset != "shortSummary":
+        return ""
+    return """
+
+Short Summary v2 review:
+- Verify strict transcript-only support exactly as for every preset, but do not
+  apply meetingNotes completeness. Here completeness means preserving the core
+  message, not retaining every grounded topic or detail.
+- Return a concise final_note whose reader-facing body is only summary: one
+  framing paragraph and a few strongest substantive points, normally 3–6 items.
+  Keep it around 250–400 words for normal dense material, never pad simple input,
+  and avoid exceeding roughly two-thirds of an A4 page.
+- Move an essential supported conclusion, consequence, or next step into summary
+  as natural prose. Leave participants, purpose, facts, decisions, actions,
+  open_questions, unclear_points, and thematic_sections empty. Do not mechanically
+  expose an owner or deadline.
+- Remove greetings, setup, jokes, repetition, filler, side tangents, and details
+  that do not change the reader's understanding of the central message.
+- Keep valid source_segments on every summary item for internal validation, but
+  remove every reader-facing [Sxxxx] marker, evidence timestamp, segment ID, and
+  explanation of verification state. Unsupported or uncertain detail is
+  silently removed or narrowed, never replaced with phrases such as "not stated",
+  "not established", "the transcript does not confirm", or "responsible person
+  not identified".
+- Ensure every retained idea appears once. The result must read as a useful
+  summary, never as minutes or a verification report.
+""".strip()
+
+
 def presentation_verification_instructions(note_preset: str) -> str:
     if note_preset != "presentationSummary":
         return ""
@@ -423,26 +498,46 @@ Presentation-summary review:
 - Keep the result materially shorter and more selective than meetingNotes for
   the same transcript. Do not force meeting-style decisions, actions, owners,
   deadlines, participants, or generic verification sections.
+- Presentation Summary v2 style pass: rewrite unnecessary repeated presenter
+  attribution into natural or impersonal prose. Retain attribution only where it
+  distinguishes a speaker's interpretation from a cited source, separates Q&A or
+  audience input, distinguishes panelists, or preserves a material source caveat.
+- Preserve useful source distinctions in normal prose. Never add an em-dash,
+  parenthetical, uncertainty field, or separate sentence whose purpose is to
+  explain that wording was the presenter's own interpretation or to narrate the
+  verification process.
 """.strip()
 
 
 _VERIFICATION_META_PATTERN = re.compile(
     r"(?:"
-    r"framgår\s+inte\s+(?:av|i)\s+(?:transkriptionen|transkriptet|transcriptet)|"
-    r"anges\s+inte\s+i\s+(?:transkriptionen|transkriptet|transcriptet)|"
+    r"framgår\s+inte\s+(?:av|i)\s+(?:transkriptionen|transkriptet|transcriptet|samtalet|inspelningen)|"
+    r"anges\s+inte\s+i\s+(?:transkriptionen|transkriptet|transcriptet|samtalet|inspelningen)|"
     r"(?:kan|kunde|går|gick)\s+inte\s+(?:att\s+)?verifiera(?:s)?|"
     r"det\s+är\s+inte\s+bekräftat\s+om|"
     r"(?:transkriptionen|transkriptet|transcriptet)\s+(?:anger|visar|bekräftar)\s+inte|"
+    r"(?:ansvarig|ägare|tidsfrist|tidplan)\s+(?:är|var)?\s*inte\s+(?:angiven|angivet|identifierad|identifierat|fastställd|fastställt)|"
     r"cannot\s+be\s+verified|could\s+not\s+be\s+verified|"
     r"not\s+(?:stated|specified|confirmed)\s+in\s+(?:the\s+)?transcript|"
     r"the\s+transcript\s+does\s+not\s+(?:state|specify|confirm)|"
+    r"(?:responsible\s+person|owner|deadline)\s+(?:is|was)\s+not\s+(?:identified|stated|specified|established)|"
     r"nie\s+(?:wynika|podano)\s+(?:z|w)\s+transkrypcji|"
-    r"nie\s+można\s+zweryfikować|transkrypcja\s+nie\s+potwierdza"
+    r"nie\s+można\s+zweryfikować|transkrypcja\s+nie\s+potwierdza|"
+    r"(?:osoba\s+odpowiedzialna|właściciel|termin)\s+nie\s+(?:został[ao]?\s+)?(?:wskazan[ay]|ustalon[ay])"
     r")",
     re.IGNORECASE,
 )
 _VERIFICATION_META_PARENTHETICAL = re.compile(
     rf"\s*[\(\[][^\)\]]*{_VERIFICATION_META_PATTERN.pattern}[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
+_INTERNAL_SOURCE_MARKER_PATTERN = re.compile(
+    r"\s*(?:"
+    r"\[\s*S\d{1,6}(?:\s+\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\s*[-–—]\s*"
+    r"\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?)?\s*\]|"
+    r"\[\s*\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\s*[-–—]\s*"
+    r"\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\s*\]"
+    r")",
     re.IGNORECASE,
 )
 
@@ -451,7 +546,8 @@ def remove_verification_meta(value: str | None) -> str | None:
     """Remove explicit reviewer commentary while retaining adjacent useful text."""
     if value is None:
         return None
-    without_parentheticals = _VERIFICATION_META_PARENTHETICAL.sub("", value).strip()
+    without_markers = _INTERNAL_SOURCE_MARKER_PATTERN.sub("", value)
+    without_parentheticals = _VERIFICATION_META_PARENTHETICAL.sub("", without_markers).strip()
     clauses = re.split(r"(?<=[.!?])\s+|;\s+|\s+[—–]\s+", without_parentheticals)
     kept = [
         clause.strip(" ;—–")
@@ -463,8 +559,8 @@ def remove_verification_meta(value: str | None) -> str | None:
 
 
 def finalize_note_for_user(note: MeetingNote, note_preset: str) -> MeetingNote:
-    """Apply the v4 meeting-only cleanup without changing source provenance."""
-    if note_preset != "meetingNotes":
+    """Apply preset-specific reader cleanup without changing source provenance."""
+    if note_preset not in {"meetingNotes", "shortSummary", "presentationSummary"}:
         return note
 
     def clean_statement(item: GroundedStatement | None) -> GroundedStatement | None:
@@ -504,23 +600,68 @@ def finalize_note_for_user(note: MeetingNote, note_preset: str) -> MeetingNote:
                 "bullet_points": bullet_points,
             }))
 
-    return note.model_copy(update={
+    cleaned = {
         "title": clean_statement(note.title),
         "meeting_date": clean_statement(note.meeting_date),
         "meeting_place": clean_statement(note.meeting_place),
-        # No trusted participant metadata exists in the current request model,
-        # so a transcript-derived list cannot be known to be sufficiently complete.
-        "participants": [],
+        "participants": clean_statements(note.participants),
         "purpose": clean_statements(note.purpose),
         "summary": clean_statements(note.summary),
         "facts": clean_statements(note.facts),
         "decisions": clean_statements(note.decisions),
         "actions": actions,
         "open_questions": clean_statements(note.open_questions),
-        # ASR/model uncertainty remains internal; substantive uncertainty must
-        # already be expressed once in the grounded statement text.
         "unclear_points": [],
         "thematic_sections": thematic_sections,
+    }
+
+    if note_preset == "meetingNotes":
+        # No trusted participant metadata exists in the current request model,
+        # so a transcript-derived list cannot be known to be sufficiently complete.
+        cleaned["participants"] = []
+        return note.model_copy(update=cleaned)
+
+    if note_preset == "presentationSummary":
+        # Thematic structure stays intact; only internal markers, verification
+        # commentary and duplicate uncertainty fields are removed.
+        return note.model_copy(update=cleaned)
+
+    summary_candidates = list(cleaned["summary"])
+    summary_candidates.extend(cleaned["facts"])
+    summary_candidates.extend(cleaned["decisions"])
+    summary_candidates.extend(
+        GroundedStatement(text=item.task, source_segments=item.source_segments)
+        for item in actions
+    )
+    summary_candidates.extend(cleaned["open_questions"])
+
+    concise_summary: list[GroundedStatement] = []
+    seen_text: set[str] = set()
+    for item in summary_candidates:
+        normalized = re.sub(r"\W+", " ", item.text.casefold()).strip()
+        if not normalized or normalized in seen_text:
+            continue
+        seen_text.add(normalized)
+        concise_summary.append(item)
+        if len(concise_summary) == 6:
+            break
+
+    # Short Summary v2 has one reader-facing body. If Terra left an essential
+    # takeaway in a legacy field, retain its supported substance once as summary
+    # prose while removing meeting-minutes mechanics.
+    return note.model_copy(update={
+        "title": cleaned["title"],
+        "meeting_date": None,
+        "meeting_place": None,
+        "participants": [],
+        "purpose": [],
+        "summary": concise_summary,
+        "facts": [],
+        "decisions": [],
+        "actions": [],
+        "open_questions": [],
+        "unclear_points": [],
+        "thematic_sections": [],
     })
 
 
@@ -710,6 +851,11 @@ def render_note_markdown(
         if item:
             lines.append(f"**{label}:** {statement_text(item)}")
 
+    if note_preset == "shortSummary":
+        for item in note.summary:
+            lines.extend(["", statement_text(item)])
+        return "\n".join(lines).strip() + "\n"
+
     if use_thematic_sections:
         if note.participants:
             lines.extend(["", f"## {labels['participants']}"])
@@ -784,8 +930,6 @@ def render_note_markdown(
         values = sections[key]
         if not values:
             continue
-        if note_preset == "shortSummary" and key == "summary":
-            values = values[:5]
         lines.extend(["", f"## {labels[key]}"])
         narrative_section = key in {"purpose", "summary", "facts", "open_questions", "unclear_points"}
         if narrative_section:
@@ -951,15 +1095,26 @@ def render_pdf(
     note = finalize_note_for_user(note, note_preset)
     text = dict(labels.get(language.lower(), labels["en"]))
     text["document"] = {
-        "sv": {"meetingNotes": "MÖTESANTECKNING", "presentationSummary": "PRESENTATIONSSAMMANFATTNING"},
-        "pl": {"meetingNotes": "NOTATKA ZE SPOTKANIA", "presentationSummary": "PODSUMOWANIE PREZENTACJI"},
-        "en": {"meetingNotes": "MEETING NOTES", "presentationSummary": "PRESENTATION SUMMARY"},
+        "sv": {
+            "meetingNotes": "MÖTESANTECKNING",
+            "shortSummary": "KORT SAMMANFATTNING",
+            "presentationSummary": "PRESENTATIONSSAMMANFATTNING",
+        },
+        "pl": {
+            "meetingNotes": "NOTATKA ZE SPOTKANIA",
+            "shortSummary": "KRÓTKIE PODSUMOWANIE",
+            "presentationSummary": "PODSUMOWANIE PREZENTACJI",
+        },
+        "en": {
+            "meetingNotes": "MEETING NOTES",
+            "shortSummary": "SHORT SUMMARY",
+            "presentationSummary": "PRESENTATION SUMMARY",
+        },
     }.get(language.lower(), {}).get(note_preset, text["document"])
 
-    story = [
-        Paragraph(text["document"], styles["NoteTitle"]),
-        Paragraph(text["draft"], styles["NoteWarning"]),
-    ]
+    story = [Paragraph(text["document"], styles["NoteTitle"])]
+    if note_preset not in {"shortSummary", "presentationSummary"}:
+        story.append(Paragraph(text["draft"], styles["NoteWarning"]))
 
     def display_statement(item: GroundedStatement) -> str:
         value = item.text
@@ -1000,7 +1155,10 @@ def render_pdf(
 
     use_thematic_sections = note_preset in {"meetingNotes", "presentationSummary"} and bool(note.thematic_sections)
     add_statements(text["participants"], note.participants, as_list=True)
-    if use_thematic_sections:
+    if note_preset == "shortSummary":
+        for item in note.summary:
+            story.append(Paragraph(paragraph_text(display_statement(item)), styles["NoteBody"]))
+    elif use_thematic_sections:
         for section in note.thematic_sections:
             if not section.paragraphs and not section.bullet_points:
                 continue
@@ -1116,9 +1274,21 @@ def render_docx(
     note = finalize_note_for_user(note, note_preset)
     text = dict(labels.get(language.lower(), labels["en"]))
     text["document"] = {
-        "sv": {"meetingNotes": "MÖTESANTECKNING", "presentationSummary": "PRESENTATIONSSAMMANFATTNING"},
-        "pl": {"meetingNotes": "NOTATKA ZE SPOTKANIA", "presentationSummary": "PODSUMOWANIE PREZENTACJI"},
-        "en": {"meetingNotes": "MEETING NOTES", "presentationSummary": "PRESENTATION SUMMARY"},
+        "sv": {
+            "meetingNotes": "MÖTESANTECKNING",
+            "shortSummary": "KORT SAMMANFATTNING",
+            "presentationSummary": "PRESENTATIONSSAMMANFATTNING",
+        },
+        "pl": {
+            "meetingNotes": "NOTATKA ZE SPOTKANIA",
+            "shortSummary": "KRÓTKIE PODSUMOWANIE",
+            "presentationSummary": "PODSUMOWANIE PREZENTACJI",
+        },
+        "en": {
+            "meetingNotes": "MEETING NOTES",
+            "shortSummary": "SHORT SUMMARY",
+            "presentationSummary": "PRESENTATION SUMMARY",
+        },
     }.get(language.lower(), {}).get(note_preset, text["document"])
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1143,17 +1313,18 @@ def render_docx(
     run.font.size = Pt(18)
     run.font.color.rgb = RGBColor(33, 53, 71)
 
-    warning = document.add_table(rows=1, cols=1)
-    warning.autofit = True
-    cell = warning.cell(0, 0)
-    cell.text = text["draft"]
-    shading = OxmlElement("w:shd")
-    shading.set(qn("w:fill"), "FFF8E5")
-    cell._tc.get_or_add_tcPr().append(shading)
-    for paragraph in cell.paragraphs:
-        paragraph.paragraph_format.space_after = Pt(0)
-        for warning_run in paragraph.runs:
-            warning_run.font.size = Pt(8.5)
+    if note_preset not in {"shortSummary", "presentationSummary"}:
+        warning = document.add_table(rows=1, cols=1)
+        warning.autofit = True
+        cell = warning.cell(0, 0)
+        cell.text = text["draft"]
+        shading = OxmlElement("w:shd")
+        shading.set(qn("w:fill"), "FFF8E5")
+        cell._tc.get_or_add_tcPr().append(shading)
+        for paragraph in cell.paragraphs:
+            paragraph.paragraph_format.space_after = Pt(0)
+            for warning_run in paragraph.runs:
+                warning_run.font.size = Pt(8.5)
 
     def display_statement(item: GroundedStatement) -> str:
         value = item.text
@@ -1201,7 +1372,10 @@ def render_docx(
 
     use_thematic_sections = note_preset in {"meetingNotes", "presentationSummary"} and bool(note.thematic_sections)
     add_statements(text["participants"], note.participants, as_list=True)
-    if use_thematic_sections:
+    if note_preset == "shortSummary":
+        for item in note.summary:
+            document.add_paragraph(display_statement(item))
+    elif use_thematic_sections:
         for section in note.thematic_sections:
             if not section.paragraphs and not section.bullet_points:
                 continue

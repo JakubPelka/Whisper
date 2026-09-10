@@ -182,22 +182,90 @@ class DocxTests(unittest.TestCase):
         self.assertTrue(payload.startswith(b"PK"))
         self.assertGreater(len(payload), 1000)
 
-    def test_markdown_is_natural_and_hides_internal_evidence_citations(self):
+    def test_short_summary_docx_uses_summary_title_without_audit_warning(self):
+        from docx import Document
+
         note = MeetingNote(
+            title=GroundedStatement(text="Digital hantering [S0001]", source_segments=[1]),
+            summary=[GroundedStatement(
+                text="Samtalet fokuserade på ett gemensamt arbetssätt. [S0002]",
+                source_segments=[2],
+            )],
+        )
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            path = Path(temporary_dir) / "summary.docx"
+            render_docx(
+                note=note,
+                output_path=path,
+                source_name="recording.m4a",
+                language="sv",
+                note_preset="shortSummary",
+            )
+            document = Document(path)
+            rendered_text = "\n".join(
+                [paragraph.text for paragraph in document.paragraphs]
+                + [cell.text for table in document.tables for row in table.rows for cell in row.cells]
+            )
+
+        self.assertIn("KORT SAMMANFATTNING", rendered_text)
+        self.assertIn("Samtalet fokuserade på ett gemensamt arbetssätt.", rendered_text)
+        self.assertNotIn("TJÄNSTEANTECKNING", rendered_text)
+        self.assertNotIn("Arbetsanteckning automatiskt", rendered_text)
+        self.assertNotIn("[S0001]", rendered_text)
+        self.assertNotIn("[S0002]", rendered_text)
+
+    def test_short_summary_markdown_is_clean_reader_facing_prose(self):
+        note = MeetingNote(
+            title=GroundedStatement(text="Informationshantering [S0030]", source_segments=[1]),
             summary=[
-                GroundedStatement(text="En styrkt sammanfattning.", source_segments=[1, 2]),
-                GroundedStatement(text="En annan relevant del av diskussionen.", source_segments=[3]),
+                GroundedStatement(
+                    text="Samtalet handlade om hur digitala underlag ska hanteras. [S0041]",
+                    source_segments=[1, 2],
+                ),
+                GroundedStatement(
+                    text="En gemensam lagringsprincip behöver tas fram.",
+                    source_segments=[3],
+                    uncertainty="Formuleringen kan inte verifieras.",
+                ),
             ],
-            decisions=[GroundedStatement(text="Ett styrkt beslut.", source_segments=[4])],
+            facts=[GroundedStatement(
+                text="En gemensam lagringsprincip behöver tas fram.",
+                source_segments=[3],
+            )],
+            actions=[ActionItem(
+                task="Ta fram ett förslag till lagringsprincip.",
+                responsible="Ansvarig är inte identifierad.",
+                deadline="Tidsfrist är inte angiven.",
+                source_segments=[4],
+            )],
+            unclear_points=[UnclearPoint(
+                description="Ett namn framgår inte av transkriptionen.",
+                source_segments=[5],
+            )],
         )
 
+        final_note = finalize_note_for_user(note, "shortSummary")
         rendered = render_note_markdown(note, "sv", "shortSummary")
 
         self.assertIn("# Kort sammanfattning", rendered)
-        self.assertIn("En styrkt sammanfattning.", rendered)
-        self.assertNotIn("[S0001]", rendered)
-        self.assertNotIn("- En styrkt sammanfattning.", rendered)
-        self.assertIn("- Ett styrkt beslut.", rendered)
+        self.assertIn("**Ärende:** Informationshantering", rendered)
+        self.assertIn("Samtalet handlade om hur digitala underlag ska hanteras.", rendered)
+        self.assertIn("Ta fram ett förslag till lagringsprincip.", rendered)
+        self.assertEqual(len(final_note.summary), 3)
+        self.assertEqual(final_note.summary[0].source_segments, [1, 2])
+        self.assertEqual(final_note.summary[2].source_segments, [4])
+        self.assertEqual(final_note.actions, [])
+        for forbidden in (
+            "[S0030]",
+            "[S0041]",
+            "## Sammanfattning",
+            "## Åtgärder",
+            "## Oklarheter",
+            "Ansvarig",
+            "Tidsfrist",
+            "verifieras",
+        ):
+            self.assertNotIn(forbidden, rendered)
 
 
 class NaturalNotesPromptTests(unittest.TestCase):
@@ -223,18 +291,33 @@ class NaturalNotesPromptTests(unittest.TestCase):
         self.assertIn("QGIS", verification)
         self.assertIn("not evidence", verification)
 
-    def test_presentation_prompt_remains_v3_selective_and_grounded(self):
+    def test_short_summary_v2_is_selective_concise_and_grounded(self):
+        draft = draft_instructions("sv", "shortSummary")
+        verification = verification_instructions("sv", "shortSummary")
+
+        self.assertIn("Short Summary v2", draft)
+        self.assertIn("250–400 words", draft)
+        self.assertIn("whole reader-facing body in summary", draft)
+        self.assertIn("Short Summary v2 review", verification)
+        self.assertIn("core message", verification)
+        self.assertIn("[Sxxxx]", verification)
+        self.assertIn("source_segments", verification)
+        self.assertNotIn("Natural Notes v4 meeting-note delta", draft)
+
+    def test_presentation_prompt_is_v2_style_delta_and_remains_selective(self):
         draft = draft_instructions("sv", "presentationSummary")
         verification = verification_instructions("sv", "presentationSummary")
 
-        self.assertNotIn("Natural Notes v4", draft)
-        self.assertNotIn("Natural Notes v4", verification)
-        self.assertIn("Presentation-summary review", verification)
+        self.assertIn("Presentation Summary v2 style delta", draft)
+        self.assertIn("Presentation Summary v2 style pass", verification)
+        self.assertIn("repeated presenter", verification)
+        self.assertIn("not meeting minutes", draft)
         self.assertIn("Completeness means preserving the important message", verification)
         self.assertIn("audience speculation", verification)
+        self.assertNotIn("Natural Notes v4 meeting-note delta", draft)
 
 
-class NaturalNotesV4CleanupTests(unittest.TestCase):
+class ReaderFacingCleanupTests(unittest.TestCase):
     def test_cleanup_keeps_action_and_relative_deadline_without_meta_commentary(self):
         note = MeetingNote(
             participants=[GroundedStatement(text="En deltagare deltog digitalt.", source_segments=[1])],
@@ -301,13 +384,34 @@ class NaturalNotesV4CleanupTests(unittest.TestCase):
         self.assertIn("indikativt underlag", rendered)
         self.assertNotIn("verifieras", rendered)
 
-    def test_presentation_summary_is_not_modified_by_v4_cleanup(self):
+    def test_presentation_cleanup_hides_markers_and_verification_fields(self):
         note = MeetingNote(
-            participants=[GroundedStatement(text="Talaren presenterade resultat.", source_segments=[1])],
-            unclear_points=[UnclearPoint(description="Ett namn var otydligt.", source_segments=[2])],
+            thematic_sections=[ThematicSection(
+                heading="Viktigaste resultaten [S0010]",
+                paragraphs=[GroundedStatement(
+                    text="Rapporten visade en tydlig förändring. [S0012]",
+                    source_segments=[10, 12],
+                    uncertainty="Formuleringen kan inte verifieras.",
+                )],
+            )],
+            unclear_points=[UnclearPoint(
+                description="Källan framgår inte av transkriptionen.",
+                source_segments=[13],
+            )],
         )
 
-        self.assertIs(finalize_note_for_user(note, "presentationSummary"), note)
+        final_note = finalize_note_for_user(note, "presentationSummary")
+        rendered = render_note_markdown(note, "sv", "presentationSummary")
+
+        paragraph = final_note.thematic_sections[0].paragraphs[0]
+        self.assertEqual(paragraph.source_segments, [10, 12])
+        self.assertIsNone(paragraph.uncertainty)
+        self.assertEqual(final_note.unclear_points, [])
+        self.assertIn("## Viktigaste resultaten", rendered)
+        self.assertNotIn("[S0010]", rendered)
+        self.assertNotIn("[S0012]", rendered)
+        self.assertNotIn("verifieras", rendered)
+        self.assertNotIn("## Oklarheter", rendered)
 
 
 class ThematicRenderingTests(unittest.TestCase):

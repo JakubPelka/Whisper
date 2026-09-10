@@ -383,7 +383,8 @@ ANTEK_PRIVATE_ALPHA_INCLUDED_CREDITS=100000
 ANTEK_CALIBRATION_VERSION=private-alpha-v1
 ANTEK_PIPELINE_VERSION=luna-terra-v3-natural-notes              # unchanged legacy presets
 ANTEK_MEETING_PIPELINE_VERSION=luna-terra-v4-natural-notes      # meetingNotes
-ANTEK_PRESENTATION_PIPELINE_VERSION=luna-terra-v3-presentation-summary
+ANTEK_SHORT_SUMMARY_PIPELINE_VERSION=luna-terra-v2-short-summary
+ANTEK_PRESENTATION_PIPELINE_VERSION=luna-terra-v2-presentation-summary
 ANTEK_PRICING_VERSION=private-alpha-v1
 ANTEK_ADMIN_TOKEN=...                 # aggregate non-content statistics only
 ```

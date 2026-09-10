@@ -111,14 +111,15 @@ class RequestSchemaTests(unittest.TestCase):
         request = GenerateNoteRequest.model_validate(request_payload(preset="presentationSummary"))
         self.assertEqual(request.note_preset, "presentationSummary")
 
-    def test_pipeline_versions_keep_meeting_v4_separate_from_presentation_v3(self):
+    def test_pipeline_versions_track_independently_tuned_presets(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(pipeline_version_for("meetingNotes"), "luna-terra-v4-natural-notes")
+            self.assertEqual(pipeline_version_for("shortSummary"), "luna-terra-v2-short-summary")
             self.assertEqual(
                 pipeline_version_for("presentationSummary"),
-                "luna-terra-v3-presentation-summary",
+                "luna-terra-v2-presentation-summary",
             )
-            self.assertEqual(pipeline_version_for("shortSummary"), "luna-terra-v3-natural-notes")
+            self.assertEqual(pipeline_version_for("serviceNote"), "luna-terra-v3-natural-notes")
 
 
 class EngineIntegrationTests(unittest.TestCase):
