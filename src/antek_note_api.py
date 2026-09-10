@@ -322,6 +322,21 @@ def transcript_text_for_measurement(request: GenerateNoteRequest) -> str:
     return "\n".join(segment.text for segment in request.transcript.segments)
 
 
+def pipeline_version_for(note_preset: NotePreset) -> str:
+    """Keep meeting v4 and the unchanged presentation preset distinguishable."""
+    if note_preset == "meetingNotes":
+        return os.environ.get(
+            "ANTEK_MEETING_PIPELINE_VERSION",
+            "luna-terra-v4-natural-notes",
+        )
+    if note_preset == "presentationSummary":
+        return os.environ.get(
+            "ANTEK_PRESENTATION_PIPELINE_VERSION",
+            "luna-terra-v3-presentation-summary",
+        )
+    return os.environ.get("ANTEK_PIPELINE_VERSION", "luna-terra-v3-natural-notes")
+
+
 def estimate_for(request: GenerateNoteRequest) -> ProcessingEstimate:
     # The client has the same versioned, deliberately conservative approximation.
     # Actual customer settlement remains based on provider usage after Generate.
@@ -660,7 +675,7 @@ async def generate_note_endpoint(
                 str(request.request_id), subject_id, utc_now(), request.recording_duration_seconds,
                 byte_count(transcript_text), len(transcript_text), int(context_bytes > 0), context_bytes,
                 request.note_preset, request.language,
-                os.environ.get("ANTEK_PIPELINE_VERSION", "luna-terra-v3-natural-notes"),
+                pipeline_version_for(request.note_preset),
                 os.environ.get("ANTEK_PRICING_VERSION", "private-alpha-v1"), estimate.total_credits,
             ),
         )

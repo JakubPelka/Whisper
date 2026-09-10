@@ -19,6 +19,7 @@ from generate_meeting_note import (  # noqa: E402
     VerificationResult,
     create_note_with_api,
     draft_instructions,
+    finalize_note_for_user,
     load_transcript,
     read_named_secret,
     render_docx,
@@ -200,26 +201,113 @@ class DocxTests(unittest.TestCase):
 
 
 class NaturalNotesPromptTests(unittest.TestCase):
-    def test_v3_meeting_prompts_keep_grounding_and_require_completeness(self):
+    def test_v4_meeting_prompts_keep_grounding_and_require_unique_coverage(self):
         draft = draft_instructions("sv", "meetingNotes")
         verification = verification_instructions("sv", "meetingNotes")
 
+        self.assertIn("Natural Notes v4", draft)
         self.assertIn("Every substantive structured item must include", draft)
         self.assertIn("not reader-facing prose", draft)
         self.assertIn("Vi gick igenom", draft)
         self.assertIn("substantive completeness", draft)
         self.assertIn("thematic_sections", draft)
+        self.assertIn("UNIQUE material source", draft)
         self.assertIn("Normally do this silently", verification)
         self.assertIn("Preserve good coherent prose", verification)
         self.assertIn("Completeness pass", verification)
         self.assertIn("grounded content that Luna omitted", verification)
+        self.assertIn("SUPPORT CHECK", verification)
+        self.assertIn("COVERAGE CHECK", verification)
+        self.assertIn("prioritized sequences", draft)
+        self.assertIn("deadlines, ordered sequences", verification)
+        self.assertIn("QGIS", verification)
+        self.assertIn("not evidence", verification)
 
-    def test_presentation_verification_is_selective_but_grounded(self):
+    def test_presentation_prompt_remains_v3_selective_and_grounded(self):
+        draft = draft_instructions("sv", "presentationSummary")
         verification = verification_instructions("sv", "presentationSummary")
 
+        self.assertNotIn("Natural Notes v4", draft)
+        self.assertNotIn("Natural Notes v4", verification)
         self.assertIn("Presentation-summary review", verification)
         self.assertIn("Completeness means preserving the important message", verification)
         self.assertIn("audience speculation", verification)
+
+
+class NaturalNotesV4CleanupTests(unittest.TestCase):
+    def test_cleanup_keeps_action_and_relative_deadline_without_meta_commentary(self):
+        note = MeetingNote(
+            participants=[GroundedStatement(text="En deltagare deltog digitalt.", source_segments=[1])],
+            summary=[GroundedStatement(text="Det är inte bekräftat om planen gäller.", source_segments=[2])],
+            actions=[ActionItem(
+                task=(
+                    "Svara leverantören och hänvisa till myndigheten. "
+                    "(En person erbjöd sig att svara, men namnet framgår inte av transkriptionen.)"
+                ),
+                responsible="Namnet framgår inte av transkriptionen.",
+                deadline="Onsdag; datumet för onsdagen anges inte i transcriptet.",
+                source_segments=[3, 4],
+                uncertainty="Ansvarig kan inte verifieras.",
+            )],
+            unclear_points=[UnclearPoint(
+                description="Stavningen kan inte verifieras.",
+                source_segments=[5],
+            )],
+        )
+
+        final_note = finalize_note_for_user(note, "meetingNotes")
+        rendered = render_note_markdown(note, "sv", "meetingNotes")
+
+        self.assertEqual(final_note.participants, [])
+        self.assertEqual(final_note.summary, [])
+        self.assertEqual(final_note.unclear_points, [])
+        self.assertEqual(len(final_note.actions), 1)
+        self.assertEqual(final_note.actions[0].task, "Svara leverantören och hänvisa till myndigheten.")
+        self.assertIsNone(final_note.actions[0].responsible)
+        self.assertEqual(final_note.actions[0].deadline, "Onsdag")
+        self.assertIsNone(final_note.actions[0].uncertainty)
+        self.assertIn("## Åtgärder", rendered)
+        for forbidden in (
+            "framgår inte av transkriptionen",
+            "anges inte i transcriptet",
+            "kan inte verifieras",
+            "## Oklarheter",
+            "## Deltagare",
+        ):
+            self.assertNotIn(forbidden, rendered)
+
+    def test_cleanup_preserves_substantive_uncertainty_once_and_keeps_provenance(self):
+        note = MeetingNote(
+            thematic_sections=[ThematicSection(
+                heading="Datakvalitet",
+                paragraphs=[GroundedStatement(
+                    text=(
+                        "Stenmurslagret är automatiskt framtaget och ännu inte fullt "
+                        "kvalitetssäkrat, så det bör användas som ett indikativt underlag."
+                    ),
+                    source_segments=[7, 8],
+                    uncertainty="Formuleringen kan inte verifieras.",
+                )],
+            )],
+        )
+
+        final_note = finalize_note_for_user(note, "meetingNotes")
+        paragraph = final_note.thematic_sections[0].paragraphs[0]
+        rendered = render_note_markdown(final_note, "sv", "meetingNotes")
+
+        self.assertEqual(paragraph.source_segments, [7, 8])
+        self.assertIsNone(paragraph.uncertainty)
+        self.assertEqual(rendered.count("kvalitetssäkrat"), 1)
+        self.assertIn("indikativt underlag", rendered)
+        self.assertNotIn("verifieras", rendered)
+
+    def test_presentation_summary_is_not_modified_by_v4_cleanup(self):
+        note = MeetingNote(
+            participants=[GroundedStatement(text="Talaren presenterade resultat.", source_segments=[1])],
+            unclear_points=[UnclearPoint(description="Ett namn var otydligt.", source_segments=[2])],
+        )
+
+        self.assertIs(finalize_note_for_user(note, "presentationSummary"), note)
 
 
 class ThematicRenderingTests(unittest.TestCase):

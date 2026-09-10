@@ -19,6 +19,7 @@ from antek_note_api import (  # noqa: E402
     app,
     canonical_segments,
     generate_note,
+    pipeline_version_for,
 )
 from generate_meeting_note import (  # noqa: E402
     GroundedStatement,
@@ -109,6 +110,15 @@ class RequestSchemaTests(unittest.TestCase):
     def test_accepts_presentation_summary_preset(self):
         request = GenerateNoteRequest.model_validate(request_payload(preset="presentationSummary"))
         self.assertEqual(request.note_preset, "presentationSummary")
+
+    def test_pipeline_versions_keep_meeting_v4_separate_from_presentation_v3(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(pipeline_version_for("meetingNotes"), "luna-terra-v4-natural-notes")
+            self.assertEqual(
+                pipeline_version_for("presentationSummary"),
+                "luna-terra-v3-presentation-summary",
+            )
+            self.assertEqual(pipeline_version_for("shortSummary"), "luna-terra-v3-natural-notes")
 
 
 class EngineIntegrationTests(unittest.TestCase):
@@ -223,7 +233,7 @@ class EngineIntegrationTests(unittest.TestCase):
         self.assertGreater(row[1], 0)
         self.assertEqual(row[2], len("Private context".encode("utf-8")))
         self.assertGreater(row[3], 0)
-        self.assertEqual(row[4], "luna-terra-v3-natural-notes")
+        self.assertEqual(row[4], "luna-terra-v4-natural-notes")
         serialized_rows = "\n".join(str(value) for value in connection.execute(
             """SELECT operation_id, subject_id, status, recording_duration_seconds, transcript_utf8_bytes,
                       transcript_character_count, context_present, context_utf8_bytes, note_preset,

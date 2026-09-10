@@ -222,7 +222,7 @@ Writing style:
   "Vi diskuterade…", "Vi pratade om…" and "Det framkom att…" when supported.
   Use "Vi konstaterade…", "Vi beslutade…" or "Vi kom överens om…" only when
   the transcript supports a shared conclusion, decision or agreement.
-- For meetingNotes (Natural Notes v3), optimize in this strict order:
+- For meetingNotes ({natural_notes_version(note_preset)}), optimize in this strict order:
   groundedness, substantive completeness, readability, then concision. Preserve
   decisions, actions, timeframes, milestones, dependencies, alternatives,
   reasons, technical constraints, data and delivery requirements, risks,
@@ -263,7 +263,43 @@ Grounding rules are strict:
 - This is a grounded professional note, not a verbatim transcript and not a
   creative summary. Grounding constrains what may be written; it must not make
   the finished note sound like an evidence report.
+{meeting_v4_draft_instructions(note_preset)}
 {presentation_draft_instructions(note_preset)}
+""".strip()
+
+
+def natural_notes_version(note_preset: str) -> str:
+    return "Natural Notes v4" if note_preset == "meetingNotes" else "Natural Notes v3"
+
+
+def meeting_v4_draft_instructions(note_preset: str) -> str:
+    if note_preset != "meetingNotes":
+        return ""
+    return """
+
+Natural Notes v4 meeting-note delta:
+- Before returning the draft, internally inventory every UNIQUE material source
+  item and ensure it appears once in the best location. An item may be discarded
+  only when it is conversational noise or repetition, not merely because it is
+  short or dominated by a larger theme.
+- Give extra protection to decisions, actions, relative deadlines, ordered or
+  prioritized sequences, dependencies, responsibilities when reliable,
+  milestones, technical constraints, risks, delivery requirements, workflow
+  changes, data limitations, alternatives, scope choices, follow-up commitments,
+  and important postponed items.
+- Completeness is information coverage, not length. Do not repeat an item in a
+  summary, thematic section, facts and decisions to make the note look complete.
+- Never put model, ASR, evidence-review, or transcript-verification commentary in
+  reader-facing text. Keep uncertainty fields and unclear_points internal and
+  normally empty. Express a real-world uncertainty discussed by participants
+  naturally once in the substantive text itself.
+- Do not populate participants from partial speaker recognition. Include a
+  participant list only when sufficiently complete, reliable participant data is
+  supplied as trusted metadata. Transcript snippets and optional meeting context
+  do not establish a complete participant list.
+- Normalize an obvious ASR spelling of a technical term or proper name when the
+  intended term is highly confident. Optional context or vocabulary may identify
+  terminology, but it can never establish that the topic was discussed.
 """.strip()
 
 
@@ -329,7 +365,45 @@ It may affect emphasis and ordering, but it is not evidence.
 - Optimize in this order: factual support, completeness of relevant meeting
   content, then natural professional readability. Source segment IDs remain
   internal metadata and must stay attached to every substantive item.
+{meeting_v4_verification_instructions(note_preset)}
 {presentation_verification_instructions(note_preset)}
+""".strip()
+
+
+def meeting_v4_verification_instructions(note_preset: str) -> str:
+    if note_preset != "meetingNotes":
+        return ""
+    return """
+
+Natural Notes v4 meeting-note coverage and cleanup:
+- SUPPORT CHECK: silently remove, narrow, or correct every claim that is not
+  supported by transcript evidence. A highly confident normalization such as
+  KUGIS / KU-GIS to QGIS may be retained as terminology correction; it does not
+  make optional context evidence for a meeting fact.
+- COVERAGE CHECK: make an internal inventory of every UNIQUE material transcript
+  item, then map each item to its semantic equivalent in the final note. Restore
+  any missing useful item with its source segments. Matching is about information
+  content, not identical wording or headings.
+- In the coverage inventory, explicitly check decisions, actions, relative
+  deadlines, ordered sequences, migration or priority order, dependencies,
+  reliable responsibilities, milestones, constraints, risks, delivery and data
+  requirements, workflow changes, alternatives, scope choices, follow-ups and
+  postponed items. Short material items are not optional.
+- Every material source item must be represented once or intentionally discarded
+  as noise/repetition. Never expose this inventory or the discard reasoning.
+- Never write phrases such as "framgår inte av transkriptionen", "anges inte i
+  transcriptet", "kan inte verifieras", or equivalents. If an owner cannot be
+  grounded, omit the owner but keep the action. Keep a grounded relative deadline
+  exactly as relative wording without explaining why it is not an absolute date.
+- Do not duplicate uncertainty in text plus an em-dash/parenthetical appendix.
+  Express real-world uncertainty discussed by participants naturally once in the
+  substantive text. Model, ASR, spelling, attribution and verification uncertainty
+  stay internal; do not create an Oklarheter section for them.
+- Return participants empty unless participant information is sufficiently
+  complete and comes from trusted metadata. Do not make a partial participant
+  section from the one speaker the transcript happened to identify.
+- Preserve v3's thematic prose and dynamic Beslut, Åtgärder and Öppna frågor.
+  Do not regress to generic sections or increase length through repetition.
 """.strip()
 
 
@@ -350,6 +424,104 @@ Presentation-summary review:
   the same transcript. Do not force meeting-style decisions, actions, owners,
   deadlines, participants, or generic verification sections.
 """.strip()
+
+
+_VERIFICATION_META_PATTERN = re.compile(
+    r"(?:"
+    r"framgår\s+inte\s+(?:av|i)\s+(?:transkriptionen|transkriptet|transcriptet)|"
+    r"anges\s+inte\s+i\s+(?:transkriptionen|transkriptet|transcriptet)|"
+    r"(?:kan|kunde|går|gick)\s+inte\s+(?:att\s+)?verifiera(?:s)?|"
+    r"det\s+är\s+inte\s+bekräftat\s+om|"
+    r"(?:transkriptionen|transkriptet|transcriptet)\s+(?:anger|visar|bekräftar)\s+inte|"
+    r"cannot\s+be\s+verified|could\s+not\s+be\s+verified|"
+    r"not\s+(?:stated|specified|confirmed)\s+in\s+(?:the\s+)?transcript|"
+    r"the\s+transcript\s+does\s+not\s+(?:state|specify|confirm)|"
+    r"nie\s+(?:wynika|podano)\s+(?:z|w)\s+transkrypcji|"
+    r"nie\s+można\s+zweryfikować|transkrypcja\s+nie\s+potwierdza"
+    r")",
+    re.IGNORECASE,
+)
+_VERIFICATION_META_PARENTHETICAL = re.compile(
+    rf"\s*[\(\[][^\)\]]*{_VERIFICATION_META_PATTERN.pattern}[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
+
+
+def remove_verification_meta(value: str | None) -> str | None:
+    """Remove explicit reviewer commentary while retaining adjacent useful text."""
+    if value is None:
+        return None
+    without_parentheticals = _VERIFICATION_META_PARENTHETICAL.sub("", value).strip()
+    clauses = re.split(r"(?<=[.!?])\s+|;\s+|\s+[—–]\s+", without_parentheticals)
+    kept = [
+        clause.strip(" ;—–")
+        for clause in clauses
+        if clause.strip(" ;—–") and not _VERIFICATION_META_PATTERN.search(clause)
+    ]
+    cleaned = " ".join(kept).strip()
+    return cleaned or None
+
+
+def finalize_note_for_user(note: MeetingNote, note_preset: str) -> MeetingNote:
+    """Apply the v4 meeting-only cleanup without changing source provenance."""
+    if note_preset != "meetingNotes":
+        return note
+
+    def clean_statement(item: GroundedStatement | None) -> GroundedStatement | None:
+        if item is None:
+            return None
+        text = remove_verification_meta(item.text)
+        if not text:
+            return None
+        # Real-world uncertainty belongs naturally in text. This field is kept
+        # for internal model structure, never as a second reader-facing caveat.
+        return item.model_copy(update={"text": text, "uncertainty": None})
+
+    def clean_statements(items: list[GroundedStatement]) -> list[GroundedStatement]:
+        return [cleaned for item in items if (cleaned := clean_statement(item)) is not None]
+
+    actions = []
+    for item in note.actions:
+        task = remove_verification_meta(item.task)
+        if not task:
+            continue
+        actions.append(item.model_copy(update={
+            "task": task,
+            "responsible": remove_verification_meta(item.responsible),
+            "deadline": remove_verification_meta(item.deadline),
+            "uncertainty": None,
+        }))
+
+    thematic_sections = []
+    for section in note.thematic_sections:
+        heading = remove_verification_meta(section.heading)
+        paragraphs = clean_statements(section.paragraphs)
+        bullet_points = clean_statements(section.bullet_points)
+        if heading and (paragraphs or bullet_points):
+            thematic_sections.append(section.model_copy(update={
+                "heading": heading,
+                "paragraphs": paragraphs,
+                "bullet_points": bullet_points,
+            }))
+
+    return note.model_copy(update={
+        "title": clean_statement(note.title),
+        "meeting_date": clean_statement(note.meeting_date),
+        "meeting_place": clean_statement(note.meeting_place),
+        # No trusted participant metadata exists in the current request model,
+        # so a transcript-derived list cannot be known to be sufficiently complete.
+        "participants": [],
+        "purpose": clean_statements(note.purpose),
+        "summary": clean_statements(note.summary),
+        "facts": clean_statements(note.facts),
+        "decisions": clean_statements(note.decisions),
+        "actions": actions,
+        "open_questions": clean_statements(note.open_questions),
+        # ASR/model uncertainty remains internal; substantive uncertainty must
+        # already be expressed once in the grounded statement text.
+        "unclear_points": [],
+        "thematic_sections": thematic_sections,
+    })
 
 
 def create_note_with_api(
@@ -412,6 +584,9 @@ def create_note_with_api(
     verification = verification_response.output_parsed
     if verification is None:
         raise RuntimeError("OpenAI returned no parsed verification result")
+    verification = verification.model_copy(update={
+        "final_note": finalize_note_for_user(verification.final_note, note_preset)
+    })
 
     def usage_payload(response: Any) -> dict[str, Any] | None:
         usage = getattr(response, "usage", None)
@@ -476,6 +651,7 @@ def render_note_markdown(
 ) -> str:
     """Deterministically render a verified note without another model call."""
     note_preset_instruction(note_preset)
+    note = finalize_note_for_user(note, note_preset)
     labels_by_language = {
         "sv": {
             "document": {
@@ -772,6 +948,7 @@ def render_pdf(
         },
     }
     note_preset_instruction(note_preset)
+    note = finalize_note_for_user(note, note_preset)
     text = dict(labels.get(language.lower(), labels["en"]))
     text["document"] = {
         "sv": {"meetingNotes": "MÖTESANTECKNING", "presentationSummary": "PRESENTATIONSSAMMANFATTNING"},
@@ -936,6 +1113,7 @@ def render_docx(
         },
     }
     note_preset_instruction(note_preset)
+    note = finalize_note_for_user(note, note_preset)
     text = dict(labels.get(language.lower(), labels["en"]))
     text["document"] = {
         "sv": {"meetingNotes": "MÖTESANTECKNING", "presentationSummary": "PRESENTATIONSSAMMANFATTNING"},
