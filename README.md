@@ -407,6 +407,11 @@ POST /v1/notes/generate   Authorization: Bearer <per-installation Antek credenti
 GET  /v1/internal/processing-stats  X-Antek-Admin: <admin credential>
 ```
 
+The public Generate response contains only the request/status and generated note
+needed by the app (`request_id`, `status`, `note_text`, `final_note`). Provider
+models, response IDs, verification diagnostics and raw token usage remain
+server-side and are never part of the iOS contract or retry cache.
+
 The bootstrap secret is only a private-alpha migration bridge. The app exchanges
 it once for an opaque per-installation credential stored in iOS Keychain; it is
 never accepted by the Generate endpoint. The backend assigns credits to an

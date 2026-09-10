@@ -160,15 +160,20 @@ class EngineIntegrationTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}, clear=False), patch(
             "antek_note_api.create_note_with_api", side_effect=fake_create_note_with_api
         ):
-            response = generate_note(request)
+            operation = generate_note(request)
 
         self.assertEqual(len(calls), 1)
         self.assertIsNone(calls[0]["meeting_context"])
         self.assertEqual(calls[0]["note_preset"], "shortSummary")
         self.assertIn("[S0002", calls[0]["transcript_text"])
-        self.assertEqual(response.usage["draft"]["input_tokens"], 100)
-        self.assertEqual(response.usage["verification"]["input_tokens"], 140)
-        self.assertEqual(response.status, "verified")
+        self.assertEqual(operation.api_usage["draft"]["input_tokens"], 100)
+        self.assertEqual(operation.api_usage["verification"]["input_tokens"], 140)
+        self.assertEqual(operation.response.status, "verified")
+        public_response = operation.response.model_dump(mode="json")
+        self.assertEqual(
+            set(public_response),
+            {"request_id", "status", "note_text", "final_note"},
+        )
 
     def test_audit_uses_transcript_hash_without_full_transcript(self):
         request = GenerateNoteRequest.model_validate(request_payload())
@@ -225,6 +230,12 @@ class EngineIntegrationTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            set(response.json()),
+            {"request_id", "status", "note_text", "final_note"},
+        )
+        for internal_key in ("usage", "models", "response_ids", "verification"):
+            self.assertNotIn(internal_key, response.json())
         connection = sqlite3.connect(self.database_path)
         row = connection.execute(
             """SELECT recording_duration_seconds, transcript_utf8_bytes, context_utf8_bytes,

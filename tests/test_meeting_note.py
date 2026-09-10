@@ -276,14 +276,17 @@ class NaturalNotesPromptTests(unittest.TestCase):
         self.assertIn("Natural Notes v4", draft)
         self.assertIn("Every substantive structured item must include", draft)
         self.assertIn("not reader-facing prose", draft)
-        self.assertIn("Vi gick igenom", draft)
+        self.assertIn("requested output language", draft)
+        self.assertNotIn("Vi gick igenom", draft)
         self.assertIn("substantive completeness", draft)
         self.assertIn("thematic_sections", draft)
         self.assertIn("UNIQUE material source", draft)
         self.assertIn("Normally do this silently", verification)
         self.assertIn("Preserve good coherent prose", verification)
         self.assertIn("Completeness pass", verification)
-        self.assertIn("grounded content that Luna omitted", verification)
+        self.assertIn("drafting stage omitted", verification)
+        self.assertNotIn("Luna", verification)
+        self.assertNotIn("Terra", verification)
         self.assertIn("SUPPORT CHECK", verification)
         self.assertIn("COVERAGE CHECK", verification)
         self.assertIn("prioritized sequences", draft)
@@ -318,19 +321,33 @@ class NaturalNotesPromptTests(unittest.TestCase):
 
 
 class ReaderFacingCleanupTests(unittest.TestCase):
-    def test_cleanup_keeps_action_and_relative_deadline_without_meta_commentary(self):
+    def test_short_summary_cleanup_does_not_apply_a_hard_six_item_cutoff(self):
+        note = MeetingNote(
+            summary=[
+                GroundedStatement(text=f"Material point {index}.", source_segments=[index])
+                for index in range(1, 8)
+            ]
+        )
+
+        final_note = finalize_note_for_user(note, "shortSummary")
+
+        self.assertEqual(len(final_note.summary), 7)
+        self.assertEqual(final_note.summary[-1].text, "Material point 7.")
+
+    def test_cleanup_preserves_grounded_uncertainty_and_removes_only_internal_artifacts(self):
         note = MeetingNote(
             participants=[GroundedStatement(text="En deltagare deltog digitalt.", source_segments=[1])],
-            summary=[GroundedStatement(text="Det är inte bekräftat om planen gäller.", source_segments=[2])],
+            summary=[GroundedStatement(
+                text="Ansvar för arkiveringen är fortfarande inte fastställt. [S0002]",
+                source_segments=[2],
+                uncertainty="Internal duplicate uncertainty",
+            )],
             actions=[ActionItem(
-                task=(
-                    "Svara leverantören och hänvisa till myndigheten. "
-                    "(En person erbjöd sig att svara, men namnet framgår inte av transkriptionen.)"
-                ),
-                responsible="Namnet framgår inte av transkriptionen.",
-                deadline="Onsdag; datumet för onsdagen anges inte i transcriptet.",
+                task="Svara leverantören och hänvisa till myndigheten. [S0003]",
+                responsible=None,
+                deadline="Onsdag [00:02:00–00:02:10]",
                 source_segments=[3, 4],
-                uncertainty="Ansvarig kan inte verifieras.",
+                uncertainty="Internal duplicate uncertainty",
             )],
             unclear_points=[UnclearPoint(
                 description="Stavningen kan inte verifieras.",
@@ -342,7 +359,11 @@ class ReaderFacingCleanupTests(unittest.TestCase):
         rendered = render_note_markdown(note, "sv", "meetingNotes")
 
         self.assertEqual(final_note.participants, [])
-        self.assertEqual(final_note.summary, [])
+        self.assertEqual(
+            final_note.summary[0].text,
+            "Ansvar för arkiveringen är fortfarande inte fastställt.",
+        )
+        self.assertIsNone(final_note.summary[0].uncertainty)
         self.assertEqual(final_note.unclear_points, [])
         self.assertEqual(len(final_note.actions), 1)
         self.assertEqual(final_note.actions[0].task, "Svara leverantören och hänvisa till myndigheten.")
@@ -351,9 +372,10 @@ class ReaderFacingCleanupTests(unittest.TestCase):
         self.assertIsNone(final_note.actions[0].uncertainty)
         self.assertIn("## Åtgärder", rendered)
         for forbidden in (
-            "framgår inte av transkriptionen",
-            "anges inte i transcriptet",
-            "kan inte verifieras",
+            "[S0002]",
+            "[S0003]",
+            "[00:02:00",
+            "Internal duplicate uncertainty",
             "## Oklarheter",
             "## Deltagare",
         ):

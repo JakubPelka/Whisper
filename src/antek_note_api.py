@@ -11,6 +11,7 @@ import secrets
 import sqlite3
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -95,30 +96,26 @@ class ProcessingEstimate(BaseModel):
     total_credits: int
 
 
-class VerificationResponse(BaseModel):
-    removed_or_corrected_claims: list[str]
-    warnings: list[str]
-
-
-class ModelsResponse(BaseModel):
-    draft: str
-    verification: str
-
-
-class ResponseIDs(BaseModel):
-    draft: str | None
-    verification: str | None
-
-
 class GenerateNoteResponse(BaseModel):
     request_id: UUID
     status: Literal["verified"]
     note_text: str
     final_note: MeetingNote
-    verification: VerificationResponse
-    models: ModelsResponse
-    response_ids: ResponseIDs
-    usage: dict[str, dict[str, Any] | None]
+
+
+@dataclass(frozen=True)
+class GeneratedNoteOperation:
+    """Server-only generation details kept outside the public API contract."""
+
+    response: GenerateNoteResponse
+    draft_note: MeetingNote
+    removed_or_corrected_claims: list[str]
+    verification_warnings: list[str]
+    draft_model: str
+    verification_model: str
+    draft_response_id: str | None
+    verification_response_id: str | None
+    api_usage: dict[str, dict[str, Any] | None]
 
 
 security = HTTPBearer(auto_error=False)
@@ -469,7 +466,7 @@ def settle_charge(
         )
 
 
-def generate_note(request: GenerateNoteRequest) -> GenerateNoteResponse:
+def generate_note(request: GenerateNoteRequest) -> GeneratedNoteOperation:
     ensure_api_key(None)
     segments = canonical_segments(request)
     transcript_text = transcript_for_prompt(segments)
@@ -487,40 +484,38 @@ def generate_note(request: GenerateNoteRequest) -> GenerateNoteResponse:
     )
     validate_evidence(verification.final_note, segments)
     note_text = render_note_markdown(verification.final_note, request.language, request.note_preset)
-    usage = metadata["api_usage"]
     response = GenerateNoteResponse(
         request_id=request.request_id,
         status="verified",
         note_text=note_text,
         final_note=verification.final_note,
-        verification=VerificationResponse(
-            removed_or_corrected_claims=verification.removed_or_corrected_claims,
-            warnings=verification.verification_warnings,
-        ),
-        models=ModelsResponse(draft=draft_model, verification=verification_model),
-        response_ids=ResponseIDs(
-            draft=metadata["draft_response_id"],
-            verification=metadata["verification_response_id"],
-        ),
-        usage=usage,
+    )
+    operation = GeneratedNoteOperation(
+        response=response,
+        draft_note=draft,
+        removed_or_corrected_claims=verification.removed_or_corrected_claims,
+        verification_warnings=verification.verification_warnings,
+        draft_model=draft_model,
+        verification_model=verification_model,
+        draft_response_id=metadata["draft_response_id"],
+        verification_response_id=metadata["verification_response_id"],
+        api_usage=metadata["api_usage"],
     )
     save_audit(
         request=request,
-        response=response,
+        operation=operation,
         transcript_text=transcript_text,
         reasoning_effort=reasoning_effort,
-        draft_note=draft,
     )
-    return response
+    return operation
 
 
 def save_audit(
     *,
     request: GenerateNoteRequest,
-    response: GenerateNoteResponse,
+    operation: GeneratedNoteOperation,
     transcript_text: str,
     reasoning_effort: str,
-    draft_note: MeetingNote,
 ) -> None:
     configured_directory = os.environ.get("ANTEK_AUDIT_DIR")
     if not configured_directory:
@@ -534,14 +529,20 @@ def save_audit(
             "transcript_sha256": hashlib.sha256(transcript_text.encode("utf-8")).hexdigest(),
             "language": request.language,
             "note_preset": request.note_preset,
-            "models": response.models.model_dump(mode="json"),
+            "models": {
+                "draft": operation.draft_model,
+                "verification": operation.verification_model,
+            },
             "reasoning_effort": reasoning_effort,
-            "response_ids": response.response_ids.model_dump(mode="json"),
-            "usage": response.usage,
-            "draft_note": draft_note.model_dump(mode="json"),
-            "removed_or_corrected_claims": response.verification.removed_or_corrected_claims,
-            "verification_warnings": response.verification.warnings,
-            "final_note": response.final_note.model_dump(mode="json"),
+            "response_ids": {
+                "draft": operation.draft_response_id,
+                "verification": operation.verification_response_id,
+            },
+            "usage": operation.api_usage,
+            "draft_note": operation.draft_note.model_dump(mode="json"),
+            "removed_or_corrected_claims": operation.removed_or_corrected_claims,
+            "verification_warnings": operation.verification_warnings,
+            "final_note": operation.response.final_note.model_dump(mode="json"),
         },
     )
 
@@ -686,12 +687,12 @@ async def generate_note_endpoint(
         )
         connection.execute("COMMIT")
 
-        response = await run_in_threadpool(generate_note, request)
+        operation = await run_in_threadpool(generate_note, request)
+        response = operation.response
         connection.execute("BEGIN IMMEDIATE")
-        models = response.models
         total_tokens, _supplier_cost_micros = record_provider_usage(
-            connection, operation_id=str(request.request_id), metadata_usage=response.usage,
-            draft_model=models.draft, verification_model=models.verification,
+            connection, operation_id=str(request.request_id), metadata_usage=operation.api_usage,
+            draft_model=operation.draft_model, verification_model=operation.verification_model,
         )
         pricing_version = os.environ.get("ANTEK_PRICING_VERSION", "private-alpha-v1")
         charge = actual_charge_for(total_tokens, estimate.total_credits)

@@ -221,10 +221,10 @@ Writing style:
   useful material; never duplicate them in a thematic section.
 - For conversationNote, organize thematically rather than mechanically following
   transcript order. Use meaningful headings and short, coherent paragraphs.
-- In Swedish, prefer natural formulations such as "Vi gick igenom…",
-  "Vi diskuterade…", "Vi pratade om…" and "Det framkom att…" when supported.
-  Use "Vi konstaterade…", "Vi beslutade…" or "Vi kom överens om…" only when
-  the transcript supports a shared conclusion, decision or agreement.
+- Use natural professional prose appropriate to the requested output language.
+  Prefer direct or active wording when it is natural in that language. Clearly
+  distinguish discussion from a supported conclusion, decision, or agreement;
+  do not upgrade one into another merely to make the note sound decisive.
 - For meetingNotes ({natural_notes_version(note_preset)}), optimize in this strict order:
   groundedness, substantive completeness, readability, then concision. Preserve
   decisions, actions, timeframes, milestones, dependencies, alternatives,
@@ -259,7 +259,8 @@ Grounding rules are strict:
   itself is materially important to understanding an action, a decision, or an
   unresolved interpretation.
 - For a supported action with no supported owner/deadline, leave responsible and
-  deadline empty. Never fill them with wording such as "not stated".
+  deadline empty. Never fill them with reader-facing descriptions of missing
+  transcript evidence.
 - An empty field is preferable to a plausible guess.
 - Do not identify speakers unless the transcript explicitly establishes identity.
 - Do not infer facts from the recording filename or filesystem metadata.
@@ -362,8 +363,8 @@ Presentation-summary preset:
   and do not invent attribution when speaker identity is uncertain.
 - Presentation Summary v2 style delta: use natural or impersonal prose by
   default. Because the document already summarizes a talk, do not repeatedly
-  begin sentences with "the presenter", "the speaker", a name, or pronouns such
-  as he/she merely to restate that the content came from the talk.
+  attribute ordinary sentences to the person giving the talk merely to restate
+  that the content came from the presentation.
 - Keep explicit speaker attribution only when it materially distinguishes the
   speaker's interpretation from a cited report or study, separates the main talk
   from audience comments or Q&A, distinguishes multiple panelists, or preserves
@@ -386,7 +387,7 @@ It may affect emphasis and ordering, but it is not evidence.
 - Remove unsupported claims. Do not preserve a claim merely because it sounds likely.
 - When support is partial, narrow or soften the wording to the supported part.
   Normally do this silently: do not replace removed content with reader-facing
-  prose such as "not established", "not decided" or "not stated".
+  prose describing absent evidence or the verification process.
 - Leave unsupported owner/deadline fields empty. Expose uncertainty only when
   omitting it would materially mislead the reader.
 - Confirm that every cited segment exists and actually supports the associated claim.
@@ -395,8 +396,8 @@ It may affect emphasis and ordering, but it is not evidence.
 - Perform two separate internal passes before returning the final note:
   1. Evidence pass: remove, narrow, or correct unsupported wording.
   2. Completeness pass: compare the verified draft with the transcript and add
-     back materially important, grounded content that Luna omitted. For normal
-     meetingNotes, specifically check decisions, actions, deadlines or relative
+     back materially important, grounded content that the drafting stage omitted.
+     For normal meetingNotes, specifically check decisions, actions, deadlines or relative
      timeframes, milestones, dependencies, alternatives, reasons, technical
      constraints, delivery/data requirements, limitations, risks, scope, and
      unresolved questions. Do not add conversational noise or duplicate a point.
@@ -436,10 +437,10 @@ Natural Notes v4 meeting-note coverage and cleanup:
   postponed items. Short material items are not optional.
 - Every material source item must be represented once or intentionally discarded
   as noise/repetition. Never expose this inventory or the discard reasoning.
-- Never write phrases such as "framgår inte av transkriptionen", "anges inte i
-  transcriptet", "kan inte verifieras", or equivalents. If an owner cannot be
-  grounded, omit the owner but keep the action. Keep a grounded relative deadline
-  exactly as relative wording without explaining why it is not an absolute date.
+- Never narrate absent transcript evidence or the verification process in the
+  reader-facing note. If an owner cannot be grounded, omit the owner but keep
+  the action. Keep a grounded relative deadline exactly as relative wording
+  without explaining why it is not an absolute date.
 - Do not duplicate uncertainty in text plus an em-dash/parenthetical appendix.
   Express real-world uncertainty discussed by participants naturally once in the
   substantive text. Model, ASR, spelling, attribution and verification uncertainty
@@ -474,9 +475,8 @@ Short Summary v2 review:
 - Keep valid source_segments on every summary item for internal validation, but
   remove every reader-facing [Sxxxx] marker, evidence timestamp, segment ID, and
   explanation of verification state. Unsupported or uncertain detail is
-  silently removed or narrowed, never replaced with phrases such as "not stated",
-  "not established", "the transcript does not confirm", or "responsible person
-  not identified".
+  silently removed or narrowed, never replaced with prose describing absent
+  evidence, missing structured values, or the verification process.
 - Ensure every retained idea appears once. The result must read as a useful
   summary, never as minutes or a verification report.
 """.strip()
@@ -504,33 +504,11 @@ Presentation-summary review:
   audience input, distinguishes panelists, or preserves a material source caveat.
 - Preserve useful source distinctions in normal prose. Never add an em-dash,
   parenthetical, uncertainty field, or separate sentence whose purpose is to
-  explain that wording was the presenter's own interpretation or to narrate the
+  explain that wording was an attributed interpretation or to narrate the
   verification process.
 """.strip()
 
 
-_VERIFICATION_META_PATTERN = re.compile(
-    r"(?:"
-    r"framgår\s+inte\s+(?:av|i)\s+(?:transkriptionen|transkriptet|transcriptet|samtalet|inspelningen)|"
-    r"anges\s+inte\s+i\s+(?:transkriptionen|transkriptet|transcriptet|samtalet|inspelningen)|"
-    r"(?:kan|kunde|går|gick)\s+inte\s+(?:att\s+)?verifiera(?:s)?|"
-    r"det\s+är\s+inte\s+bekräftat\s+om|"
-    r"(?:transkriptionen|transkriptet|transcriptet)\s+(?:anger|visar|bekräftar)\s+inte|"
-    r"(?:ansvarig|ägare|tidsfrist|tidplan)\s+(?:är|var)?\s*inte\s+(?:angiven|angivet|identifierad|identifierat|fastställd|fastställt)|"
-    r"cannot\s+be\s+verified|could\s+not\s+be\s+verified|"
-    r"not\s+(?:stated|specified|confirmed)\s+in\s+(?:the\s+)?transcript|"
-    r"the\s+transcript\s+does\s+not\s+(?:state|specify|confirm)|"
-    r"(?:responsible\s+person|owner|deadline)\s+(?:is|was)\s+not\s+(?:identified|stated|specified|established)|"
-    r"nie\s+(?:wynika|podano)\s+(?:z|w)\s+transkrypcji|"
-    r"nie\s+można\s+zweryfikować|transkrypcja\s+nie\s+potwierdza|"
-    r"(?:osoba\s+odpowiedzialna|właściciel|termin)\s+nie\s+(?:został[ao]?\s+)?(?:wskazan[ay]|ustalon[ay])"
-    r")",
-    re.IGNORECASE,
-)
-_VERIFICATION_META_PARENTHETICAL = re.compile(
-    rf"\s*[\(\[][^\)\]]*{_VERIFICATION_META_PATTERN.pattern}[^\)\]]*[\)\]]",
-    re.IGNORECASE,
-)
 _INTERNAL_SOURCE_MARKER_PATTERN = re.compile(
     r"\s*(?:"
     r"\[\s*S\d{1,6}(?:\s+\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?\s*[-–—]\s*"
@@ -542,19 +520,12 @@ _INTERNAL_SOURCE_MARKER_PATTERN = re.compile(
 )
 
 
-def remove_verification_meta(value: str | None) -> str | None:
-    """Remove explicit reviewer commentary while retaining adjacent useful text."""
+def remove_internal_artifacts(value: str | None) -> str | None:
+    """Remove only unambiguous machine provenance syntax from reader-facing text."""
     if value is None:
         return None
-    without_markers = _INTERNAL_SOURCE_MARKER_PATTERN.sub("", value)
-    without_parentheticals = _VERIFICATION_META_PARENTHETICAL.sub("", without_markers).strip()
-    clauses = re.split(r"(?<=[.!?])\s+|;\s+|\s+[—–]\s+", without_parentheticals)
-    kept = [
-        clause.strip(" ;—–")
-        for clause in clauses
-        if clause.strip(" ;—–") and not _VERIFICATION_META_PATTERN.search(clause)
-    ]
-    cleaned = " ".join(kept).strip()
+    cleaned = _INTERNAL_SOURCE_MARKER_PATTERN.sub("", value)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned).strip()
     return cleaned or None
 
 
@@ -566,7 +537,7 @@ def finalize_note_for_user(note: MeetingNote, note_preset: str) -> MeetingNote:
     def clean_statement(item: GroundedStatement | None) -> GroundedStatement | None:
         if item is None:
             return None
-        text = remove_verification_meta(item.text)
+        text = remove_internal_artifacts(item.text)
         if not text:
             return None
         # Real-world uncertainty belongs naturally in text. This field is kept
@@ -578,19 +549,19 @@ def finalize_note_for_user(note: MeetingNote, note_preset: str) -> MeetingNote:
 
     actions = []
     for item in note.actions:
-        task = remove_verification_meta(item.task)
+        task = remove_internal_artifacts(item.task)
         if not task:
             continue
         actions.append(item.model_copy(update={
             "task": task,
-            "responsible": remove_verification_meta(item.responsible),
-            "deadline": remove_verification_meta(item.deadline),
+            "responsible": remove_internal_artifacts(item.responsible),
+            "deadline": remove_internal_artifacts(item.deadline),
             "uncertainty": None,
         }))
 
     thematic_sections = []
     for section in note.thematic_sections:
-        heading = remove_verification_meta(section.heading)
+        heading = remove_internal_artifacts(section.heading)
         paragraphs = clean_statements(section.paragraphs)
         bullet_points = clean_statements(section.bullet_points)
         if heading and (paragraphs or bullet_points):
@@ -643,12 +614,9 @@ def finalize_note_for_user(note: MeetingNote, note_preset: str) -> MeetingNote:
             continue
         seen_text.add(normalized)
         concise_summary.append(item)
-        if len(concise_summary) == 6:
-            break
-
-    # Short Summary v2 has one reader-facing body. If Terra left an essential
-    # takeaway in a legacy field, retain its supported substance once as summary
-    # prose while removing meeting-minutes mechanics.
+    # Short Summary v2 has one reader-facing body. If verification left an
+    # essential takeaway in a legacy field, retain its supported substance once
+    # as summary prose while removing meeting-minutes mechanics.
     return note.model_copy(update={
         "title": cleaned["title"],
         "meeting_date": None,
@@ -837,7 +805,7 @@ def render_note_markdown(
 
     def statement_text(item: GroundedStatement) -> str:
         uncertainty = f" — {item.uncertainty}" if item.uncertainty else ""
-        # source_segments remain in MeetingNote for Terra and validation, but
+        # source_segments remain in MeetingNote for verification and validation, but
         # deliberately do not appear in the ordinary human-readable note.
         return f"{item.text}{uncertainty}".strip()
 
