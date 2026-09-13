@@ -35,10 +35,12 @@ The launcher asks for:
 Routing is automatic:
 
 ```text
-sv / Swedish      -> KB-Whisper
-other languages   -> OpenAI Whisper
-auto detection    -> OpenAI Whisper
+sv / Swedish      -> KB-Whisper Large q5_0 (whisper.cpp v1.8.6 CUDA)
+pl / en / auto    -> whisper-large-v3-turbo-q5_0 (whisper.cpp v1.8.6 CUDA)
 ```
+
+The primary transcription engine for Perun Works and headless execution uses **whisper.cpp v1.8.6 with CUDA** (`src/whisper_cpp_runtime.py` and `src/process_meeting.py`), providing exact model and parameter parity with Antek iOS. Legacy PyTorch/Transformers paths (`transcribe_whisper.py`, `transcribe_kb.py`) remain available as reference/fallback.
+
 
 Diarization / speaker separation is intentionally removed from the normal workflow.
 

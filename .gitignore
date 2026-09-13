@@ -11,6 +11,9 @@ cache/
 .cache/
 models/
 outputs/
+runtime/
+*.bin
+
 
 # Audio/input/output data
 *.m4a

@@ -285,6 +285,21 @@ class EngineIntegrationTests(unittest.TestCase):
         connection = sqlite3.connect(self.database_path)
         self.assertEqual(connection.execute("SELECT COUNT(*) FROM credit_ledger WHERE entry_type = 'charge'").fetchone()[0], 1)
 
+    def test_shared_core_parity_contract(self):
+        import antek_note_api
+        import process_meeting
+        import generate_meeting_note
+
+        self.assertIs(
+            antek_note_api.create_note_with_api,
+            generate_meeting_note.create_note_with_api,
+        )
+        self.assertIs(
+            process_meeting.create_note_with_api,
+            generate_meeting_note.create_note_with_api,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+
