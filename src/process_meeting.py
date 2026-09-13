@@ -157,20 +157,19 @@ def process_meeting(
 
     transcript_text = transcript_for_prompt(api_segments)
 
-    res_tuple = create_note_with_api(
+    res = create_note_with_api(
         transcript_text=transcript_text,
         language=note_language,
         meeting_context=context,
         note_preset=note_type,
     )
 
-    # res_tuple can be 3-tuple (draft_note, verification_result, metadata)
-    if len(res_tuple) == 3:
-        _, generation_result, _ = res_tuple
+    if isinstance(res, tuple):
+        final_note = res[1].final_note
+    elif hasattr(res, "final_note"):
+        final_note = res.final_note
     else:
-        generation_result = res_tuple[1]
-
-    final_note = generation_result.final_note
+        final_note = res
 
     report_progress(85, "Rendering output documents (DOCX, PDF, TXT, MD)...", progress_callback)
 
