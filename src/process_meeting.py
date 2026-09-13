@@ -35,6 +35,7 @@ from generate_meeting_note import (
     render_docx,
     render_note_markdown,
     render_pdf,
+    transcript_for_prompt,
 )
 from whisper_cpp_runtime import transcribe_with_whisper_cpp
 
@@ -146,19 +147,28 @@ def process_meeting(
 
     api_segments = [
         {
+            "id": i,
             "start": float(s["start"]),
             "end": float(s["end"]),
             "text": str(s["text"]),
         }
-        for s in segments
+        for i, s in enumerate(segments)
     ]
 
-    generation_result = create_note_with_api(
-        segments=api_segments,
+    transcript_text = transcript_for_prompt(api_segments)
+
+    res_tuple = create_note_with_api(
+        transcript_text=transcript_text,
         language=note_language,
-        note_preset=note_type,
         meeting_context=context,
+        note_preset=note_type,
     )
+
+    # res_tuple can be 3-tuple (draft_note, verification_result, metadata)
+    if len(res_tuple) == 3:
+        _, generation_result, _ = res_tuple
+    else:
+        generation_result = res_tuple[1]
 
     final_note = generation_result.final_note
 
