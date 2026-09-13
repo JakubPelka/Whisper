@@ -81,3 +81,40 @@ def test_transcribe_with_whisper_cpp_execution(tmp_path):
     assert result["runtime_info"]["version"] == "1.8.6"
     assert result["runtime_info"]["backend"] == "CUDA"
     assert Path(result["json_output_path"]).is_file()
+
+
+def test_transcribe_cancellation_safety(tmp_path):
+    audio_path = tmp_path / "test_audio.wav"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=5",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            str(audio_path),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    cancelled = False
+    def cancel_checker():
+        nonlocal cancelled
+        cancelled = True
+        return True
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        transcribe_with_whisper_cpp(
+            audio_path=audio_path,
+            language="en",
+            work_dir=tmp_path,
+            cancel_checker=cancel_checker,
+        )
+
