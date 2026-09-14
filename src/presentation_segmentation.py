@@ -113,7 +113,7 @@ DO NOT generate meeting notes or summaries. Return ONLY the JSON object.
 def segment_presentations_with_luna(
     segments: list[dict[str, Any]],
     api_key: str | None = None,
-    model_name: str = "gpt-4o-mini",
+    model_name: str = "gpt-5.6-luna",
 ) -> SegmentationResult:
     """Invoke OpenAI API to detect logical presentation boundaries."""
 

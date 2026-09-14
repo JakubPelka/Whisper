@@ -1344,13 +1344,13 @@ def render_docx(
         for item in note.summary:
             document.add_paragraph(display_statement(item))
     elif use_thematic_sections:
-        for section in note.thematic_sections:
-            if not section.paragraphs and not section.bullet_points:
+        for thematic_sec in note.thematic_sections:
+            if not thematic_sec.paragraphs and not thematic_sec.bullet_points:
                 continue
-            add_heading(section.heading)
-            for item in section.paragraphs:
+            add_heading(thematic_sec.heading)
+            for item in thematic_sec.paragraphs:
                 document.add_paragraph(display_statement(item))
-            for item in section.bullet_points:
+            for item in thematic_sec.bullet_points:
                 add_bullet(display_statement(item))
     else:
         add_statements(text["purpose"], note.purpose, as_list=False)
