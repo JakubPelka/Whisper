@@ -253,3 +253,19 @@ def test_segment_presentations_with_luna_mocked():
         res = segment_presentations_with_luna(segments, api_key="sk-test-mock")
         assert res.presentation_count == 1
         assert res.presentations[0].title == "Mocked Presentation"
+
+
+def test_segment_presentations_with_luna_test_guard_no_api_calls(monkeypatch):
+    segments = make_dummy_segments(5)
+    monkeypatch.setenv("APP_ENV", "testing")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-plausible-test-key-12345")
+    monkeypatch.delenv("ALLOW_REAL_AI_API", raising=False)
+
+    res = segment_presentations_with_luna(segments)
+    assert isinstance(res, SegmentationResult)
+    assert res.presentation_count == 1
+    assert len(res.presentations) == 1
+    assert res.presentations[0].start_segment_id == "S0000"
+    assert res.presentations[0].end_segment_id == "S0004"
+    assert res.presentations[0].title == "Full Recording"
+

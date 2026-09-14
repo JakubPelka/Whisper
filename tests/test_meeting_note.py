@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -477,6 +478,19 @@ class ThematicRenderingTests(unittest.TestCase):
         self.assertIn("- Öppna data", rendered)
         self.assertNotIn("## Beslut", rendered)
         self.assertNotIn("[S0001]", rendered)
+
+    def test_create_note_with_api_test_guard_no_api_calls(self):
+        with patch.dict(os.environ, {"APP_ENV": "testing", "OPENAI_API_KEY": "sk-proj-plausible-test-key-12345"}, clear=False):
+            if "ALLOW_REAL_AI_API" in os.environ:
+                del os.environ["ALLOW_REAL_AI_API"]
+
+            note, verification, meta = create_note_with_api(
+                transcript_text="[S0001 00:00:00-00:00:05] Test segment text",
+                language="pl",
+            )
+            self.assertIsNotNone(note)
+            self.assertIsNotNone(verification)
+            self.assertTrue(meta.get("stub"))
 
 
 if __name__ == "__main__":

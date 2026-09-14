@@ -142,12 +142,13 @@ def segment_presentations_with_luna(
                 version=1,
                 presentation_count=1,
                 presentations=[
-                    BoundaryEvidence(
+                    PresentationRange(
                         index=1,
                         start_segment_id="S0000",
                         end_segment_id=end_seg_id,
                         title="Full Recording",
                         boundary_confidence="high",
+                        start_evidence=[BoundaryEvidence(segment_id="S0000", signal="test_stub")],
                     )
                 ],
             )
