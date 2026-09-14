@@ -34,6 +34,7 @@ from audio_prepare import prepared_audio
 from generate_meeting_note import (
     GroundedStatement,
     MeetingNote,
+    ThematicSection,
     create_note_with_api,
     ensure_api_key,
     render_docx,
@@ -125,7 +126,7 @@ def sanitize_grounding(note: MeetingNote, start_idx: int, end_idx: int) -> Meeti
 def process_meeting(
     input_file: Path | str,
     recording_language: str = "auto",
-    note_type: str = "serviceNote",
+    note_type: str = "meetingNotes",
     note_language: str = "pl",
     context: str | None = None,
     vocabulary: str | None = None,
@@ -376,16 +377,49 @@ def process_meeting(
         md_path.write_text(full_index_text, encoding="utf-8")
         txt_path.write_text(full_index_text, encoding="utf-8")
 
-        # Render combined primary note.docx and note.pdf using the first presentation's note structure enriched with summary
+        # Build combined MeetingNote containing all N presentations for combined note.docx and note.pdf
+        combined_sections = []
+        combined_actions = []
+        combined_decisions = []
+        combined_questions = []
+
+        for item in generated_notes:
+            p_idx = item["index"]
+            p_title = item["title"]
+            p_note = item["note"]
+
+            header_sec = ThematicSection(
+                heading=f"Presentation {p_idx:02d}: {p_title}",
+                paragraphs=p_note.summary if p_note.summary else [],
+                bullet_points=[],
+            )
+            combined_sections.append(header_sec)
+            combined_sections.extend(p_note.thematic_sections)
+            combined_actions.extend(p_note.actions)
+            combined_decisions.extend(p_note.decisions)
+            combined_questions.extend(p_note.open_questions)
+
+        combined_note = MeetingNote(
+            title=GroundedStatement(
+                text=f"Combined Presentation Summaries ({len(generated_notes)} presentations)",
+                source_segments=[0],
+            ),
+            summary=[],
+            thematic_sections=combined_sections,
+            decisions=combined_decisions,
+            actions=combined_actions,
+            open_questions=combined_questions,
+        )
+
         render_docx(
-            note=generated_notes[0]["note"],
+            note=combined_note,
             output_path=docx_path,
             source_name=input_path.name,
             language=note_language,
             note_preset="presentationSummary",
         )
         render_pdf(
-            note=generated_notes[0]["note"],
+            note=combined_note,
             output_path=pdf_path,
             source_name=input_path.name,
             language=note_language,
@@ -453,9 +487,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--note-type",
-        default="serviceNote",
-        choices=["shortSummary", "conversationNote", "serviceNote", "presentationSummary"],
-        help="Note type preset (default: serviceNote)",
+        default="meetingNotes",
+        choices=["shortSummary", "meetingNotes", "conversationNote", "serviceNote", "presentationSummary"],
+        help="Note type preset (default: meetingNotes)",
     )
     parser.add_argument(
         "--note-language",

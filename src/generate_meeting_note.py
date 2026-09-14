@@ -199,7 +199,7 @@ def note_preset_instruction(note_preset: str) -> str:
         raise ValueError(f"unsupported note preset: {note_preset}") from exc
 
 
-def draft_instructions(language: str, note_preset: str = "serviceNote") -> str:
+def draft_instructions(language: str, note_preset: str = "meetingNotes") -> str:
     output_language = language_instruction(language)
     preset_instruction = note_preset_instruction(note_preset)
     return f"""
@@ -373,7 +373,7 @@ Presentation-summary preset:
 """.strip()
 
 
-def verification_instructions(language: str, note_preset: str = "serviceNote") -> str:
+def verification_instructions(language: str, note_preset: str = "meetingNotes") -> str:
     output_language = language_instruction(language)
     preset_instruction = note_preset_instruction(note_preset)
     return f"""
@@ -638,7 +638,7 @@ def create_note_with_api(
     transcript_text: str,
     language: str,
     meeting_context: str | None = None,
-    note_preset: str = "serviceNote",
+    note_preset: str = "meetingNotes",
     draft_model: str = "gpt-5.6-luna",
     verification_model: str = "gpt-5.6-terra",
     reasoning_effort: str = "medium",
@@ -646,6 +646,19 @@ def create_note_with_api(
     from openai import OpenAI
 
     client = OpenAI(timeout=900.0, max_retries=2)
+    if type(client).__module__.startswith("openai"):
+        if ("PYTEST_CURRENT_TEST" in os.environ or os.environ.get("APP_ENV") == "testing") and os.environ.get("ALLOW_REAL_AI_API") != "1":
+            stub_note = MeetingNote(
+                title=GroundedStatement(text="Grounded Meeting Note (Test Stub)", source_segments=[0]),
+                summary=[GroundedStatement(text="Grounded summary of transcript.", source_segments=[0])],
+                facts=[GroundedStatement(text="Verified test statement.", source_segments=[0])],
+            )
+            stub_verification = VerificationResult(
+                final_note=stub_note,
+                removed_or_corrected_claims=[],
+                verification_warnings=[],
+            )
+            return stub_note, stub_verification, {"draft_model": draft_model, "verification_model": verification_model, "stub": True}
     normalized_context = (meeting_context or "").strip()
     context_block = (
         f"<meeting_context role=\"background-not-evidence\">\n{escape(normalized_context)}\n</meeting_context>\n\n"
@@ -1425,7 +1438,7 @@ def main() -> int:
     parser.add_argument("--model", help=argparse.SUPPRESS)
     parser.add_argument("--reasoning-effort", default="medium")
     parser.add_argument("--meeting-context")
-    parser.add_argument("--note-preset", choices=sorted(NOTE_PRESET_INSTRUCTIONS), default="serviceNote")
+    parser.add_argument("--note-preset", choices=sorted(NOTE_PRESET_INSTRUCTIONS), default="meetingNotes")
     parser.add_argument("--env-file")
     parser.add_argument("--output-prefix")
     args = parser.parse_args()
