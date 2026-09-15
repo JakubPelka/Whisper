@@ -199,6 +199,7 @@ def process_meeting(
                 except Exception as e:
                     LOGGER.warning("Could not unlink source video %s: %s", input_path, e)
 
+        report_progress(20, "Transcribing audio with whisper.cpp CUDA...", progress_callback)
         import time
         audio_seconds = round(max(0.0, (prep.path.stat().st_size - 44) / 32000.0), 2)
         t_start = time.time()
