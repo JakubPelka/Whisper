@@ -137,6 +137,22 @@ def ensure_whisper_cli(custom_path: Path | str | None = None) -> Path:
     )
 
 
+def _drain_stream(stream: Any, buffer_list: list[str], max_tail_bytes: int = 4096) -> None:
+    tail_buffer = ""
+    try:
+        while True:
+            chunk = stream.read(4096)
+            if not chunk:
+                break
+            tail_buffer += chunk
+            if len(tail_buffer) > max_tail_bytes * 2:
+                tail_buffer = tail_buffer[-max_tail_bytes:]
+    except Exception:
+        pass
+    if tail_buffer:
+        buffer_list.append(tail_buffer[-max_tail_bytes:])
+
+
 def transcribe_with_whisper_cpp(
     audio_path: Path,
     language: str = "auto",
@@ -214,6 +230,19 @@ def transcribe_with_whisper_cpp(
         start_new_session=True,
     )
 
+    stdout_tail: list[str] = []
+    stderr_tail: list[str] = []
+
+    import threading
+    stdout_thread = threading.Thread(
+        target=_drain_stream, args=(proc.stdout, stdout_tail), daemon=True
+    )
+    stderr_thread = threading.Thread(
+        target=_drain_stream, args=(proc.stderr, stderr_tail), daemon=True
+    )
+    stdout_thread.start()
+    stderr_thread.start()
+
     try:
         while proc.poll() is None:
             if cancel_checker and cancel_checker():
@@ -239,11 +268,17 @@ def transcribe_with_whisper_cpp(
             except subprocess.TimeoutExpired:
                 pass
 
-        stdout, stderr = proc.communicate()
+        stdout_thread.join(timeout=1.0)
+        stderr_thread.join(timeout=1.0)
+
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"whisper-cli failed with return code {proc.returncode}:\n{stderr}\n{stdout}"
-            )
+            err_output = (stderr_tail[0] if stderr_tail else "") or (stdout_tail[0] if stdout_tail else "")
+            sanitized_lines = [
+                line for line in err_output.splitlines()
+                if any(k in line.lower() for k in ["error", "failed", "exception", "cuda", "alloc", "invalid", "abort", "fatal", "usage:"])
+            ]
+            err_summary = "\n".join(sanitized_lines[:5]) if sanitized_lines else "whisper-cli execution failed"
+            raise RuntimeError(f"whisper-cli failed with return code {proc.returncode}: {err_summary}")
 
     except Exception:
         if proc.poll() is None:
@@ -253,6 +288,17 @@ def transcribe_with_whisper_cpp(
             except Exception:
                 pass
         raise
+    finally:
+        if proc.stdout:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+        if proc.stderr:
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
 
     json_file = out_prefix.with_suffix(".json")
     if not json_file.is_file():

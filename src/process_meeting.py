@@ -199,9 +199,9 @@ def process_meeting(
                 except Exception as e:
                     LOGGER.warning("Could not unlink source video %s: %s", input_path, e)
 
-        report_progress(20, "Transcribing audio with whisper.cpp CUDA...", progress_callback)
-        if cancel_checker and cancel_checker():
-            raise RuntimeError("Cancelled before transcription.")
+        import time
+        audio_seconds = round(max(0.0, (prep.path.stat().st_size - 44) / 32000.0), 2)
+        t_start = time.time()
 
         transcription_result = transcribe_with_whisper_cpp(
             audio_path=prep.path,
@@ -209,6 +209,16 @@ def process_meeting(
             initial_prompt=vocabulary,
             work_dir=out_dir,
             cancel_checker=cancel_checker,
+        )
+
+        t_end = time.time()
+        wall_seconds = round(t_end - t_start, 2)
+        rtf = round(wall_seconds / max(audio_seconds, 0.001), 3)
+        LOGGER.info(
+            "Transcription telemetry: audio_duration=%.1fs, wall_time=%.1fs, RTF=%.3f",
+            audio_seconds,
+            wall_seconds,
+            rtf,
         )
 
     segments = transcription_result["segments"]
@@ -494,6 +504,11 @@ def process_meeting(
             "codec": str(prep_codec),
             "sample_rate": prep_rate,
             "channels": prep_channels,
+        },
+        "transcription_telemetry": {
+            "audio_duration_seconds": audio_seconds,
+            "wall_time_seconds": wall_seconds,
+            "real_time_factor": rtf,
         },
         "whisper_repo_commit": commit_sha,
         "whisper_cpp_version": runtime_info["version"],

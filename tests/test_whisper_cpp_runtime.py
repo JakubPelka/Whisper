@@ -118,3 +118,39 @@ def test_transcribe_cancellation_safety(tmp_path):
             cancel_checker=cancel_checker,
         )
 
+
+def test_pipe_deadlock_prevention(tmp_path, monkeypatch):
+    """Proves wrapper drains pipes continuously so child writing >1 MiB output never deadlocks."""
+    audio_path = tmp_path / "dummy_audio.wav"
+    audio_path.write_bytes(b"RIFF" + b"\x00" * 40)
+
+    fake_cli = tmp_path / "fake_whisper_cli.py"
+    fake_cli.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, json\n"
+        "# Write >1.5 MiB to stdout and stderr to exceed default 64KiB OS pipe buffer\n"
+        "sys.stdout.write('A' * 1_500_000 + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "sys.stderr.write('B' * 1_500_000 + '\\n')\n"
+        "sys.stderr.flush()\n"
+        "# Generate expected output JSON\n"
+        "out_prefix = sys.argv[sys.argv.index('-of') + 1]\n"
+        "out_json = out_prefix + '.json'\n"
+        "with open(out_json, 'w') as f:\n"
+        "    json.dump({'result': {'language': 'en'}, 'transcription': [{'text': 'Hello', 'offsets': {'from': 0, 'to': 1000}}]}, f)\n",
+        encoding="utf-8",
+    )
+    fake_cli.chmod(0o755)
+
+    monkeypatch.setattr("whisper_cpp_runtime.ensure_whisper_cli", lambda custom_path=None: fake_cli)
+    monkeypatch.setattr("whisper_cpp_runtime.ensure_model", lambda lang, mdir=None: (tmp_path / "model.bin", {"id": "fake"}))
+
+    res = transcribe_with_whisper_cpp(
+        audio_path=audio_path,
+        language="en",
+        work_dir=tmp_path,
+    )
+    assert res["language"] == "en"
+    assert len(res["segments"]) == 1
+    assert res["segments"][0]["text"] == "Hello"
+
