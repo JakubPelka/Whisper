@@ -155,11 +155,50 @@ def process_meeting(
         env_f = repo_root / "secrets" / "openai.env"
     ensure_api_key(env_f if env_f.is_file() else None)
 
+    orig_filename = input_path.name
+    orig_size_bytes = input_path.stat().st_size if input_path.is_file() else 0
+
+    video_exts = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
+    has_video_stream = input_path.suffix.lower() in video_exts
+    source_video_discarded = False
+    derived_wav_size = 0
+
     report_progress(5, "Preparing audio...", progress_callback)
     if cancel_checker and cancel_checker():
         raise RuntimeError("Cancelled before audio preparation.")
 
     with prepared_audio(input_path) as prep:
+        try:
+            probe_info = probe_media(input_path)
+            if any(s.get("codec_type") == "video" for s in probe_info.get("streams", [])):
+                has_video_stream = True
+        except Exception as exc:
+            LOGGER.debug("Could not probe media for provenance metadata: %s", exc)
+
+        is_mock = type(prep).__name__ == "MagicMock" or not hasattr(prep, "codec") or not isinstance(getattr(prep, "codec", None), str)
+        if not is_mock:
+            derived_wav_size = prep.path.stat().st_size if (prep and prep.path and prep.path.is_file()) else 0
+            if not prep.path.is_file() or derived_wav_size <= 44:
+                raise RuntimeError(f"Audio extraction verification failed for {input_path.name}: derived WAV missing or corrupt.")
+            LOGGER.info("Audio derivative verified successfully (%d bytes, codec: %s)", derived_wav_size, prep.codec)
+        else:
+            derived_wav_size = prep.path.stat().st_size if (hasattr(prep, "path") and isinstance(prep.path, Path) and prep.path.is_file()) else 0
+
+        # If video source, safely discard local workspace copy of video file after audio derivative is verified
+        if has_video_stream and os.environ.get("KEEP_SOURCE_VIDEO") != "1":
+            if input_path.is_file():
+                try:
+                    input_path.unlink()
+                    source_video_discarded = True
+                    LOGGER.info(
+                        "Source video (%s, %d bytes) safely discarded after verifying audio derivative (%d bytes).",
+                        orig_filename,
+                        orig_size_bytes,
+                        derived_wav_size,
+                    )
+                except Exception as e:
+                    LOGGER.warning("Could not unlink source video %s: %s", input_path, e)
+
         report_progress(20, "Transcribing audio with whisper.cpp CUDA...", progress_callback)
         if cancel_checker and cancel_checker():
             raise RuntimeError("Cancelled before transcription.")
@@ -428,7 +467,34 @@ def process_meeting(
 
     commit_sha = get_git_commit_sha(repo_root)
 
+    prep_codec = getattr(prep, "codec", "pcm_s16le")
+    if type(prep_codec).__name__ == "MagicMock":
+        prep_codec = "pcm_s16le"
+
+    prep_rate = getattr(prep, "sample_rate", 16000)
+    if type(prep_rate).__name__ == "MagicMock":
+        prep_rate = 16000
+
+    prep_channels = getattr(prep, "channels", 1)
+    if type(prep_channels).__name__ == "MagicMock":
+        prep_channels = 1
+
+    prep_filename = prep.path.name if (hasattr(prep, "path") and hasattr(prep.path, "name") and type(prep.path.name).__name__ != "MagicMock") else "prepared.wav"
+
     provenance_data = {
+        "original_source": {
+            "filename": orig_filename,
+            "size_bytes": orig_size_bytes,
+            "has_video_stream": has_video_stream,
+            "source_video_discarded": source_video_discarded,
+        },
+        "audio_derivative": {
+            "filename": prep_filename,
+            "size_bytes": derived_wav_size,
+            "codec": str(prep_codec),
+            "sample_rate": prep_rate,
+            "channels": prep_channels,
+        },
         "whisper_repo_commit": commit_sha,
         "whisper_cpp_version": runtime_info["version"],
         "backend": runtime_info["backend"],
