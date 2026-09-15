@@ -16,7 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger("presentation_segmentation")
 
@@ -36,6 +36,35 @@ class PresentationRange(BaseModel):
     block_type: Literal["presentation", "intro", "outro", "break", "housekeeping", "other"] = "presentation"
     start_evidence: list[BoundaryEvidence] = Field(default_factory=list)
     decision_rationale: str = ""
+
+    @field_validator("boundary_confidence", mode="before")
+    @classmethod
+    def _normalize_confidence(cls, v: Any) -> str:
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if "high" in s:
+                return "high"
+            if "med" in s:
+                return "medium"
+            if "low" in s:
+                return "low"
+        return "high"
+
+    @field_validator("is_presentation", mode="before")
+    @classmethod
+    def _normalize_is_presentation(cls, v: Any) -> bool:
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "y")
+        return bool(v)
+
+    @field_validator("block_type", mode="before")
+    @classmethod
+    def _normalize_block_type(cls, v: Any) -> str:
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("presentation", "intro", "outro", "break", "housekeeping", "other"):
+                return s
+        return "presentation"
 
     @property
     def start_idx(self) -> int:
@@ -214,16 +243,20 @@ def segment_presentations_with_luna(
         {"role": "user", "content": f"Analyze the following transcript and return presentation boundaries:\n\n{prompt_transcript}"},
     ]
 
-    response = client.chat.completions.create(
-        model=model_name,
-        messages=messages,
-        response_format={"type": "json_object"},
-        temperature=0.1,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            response_format={"type": "json_object"},
+            temperature=0.1,
+        )
 
-    content = response.choices[0].message.content or "{}"
-    data = json.loads(content)
-    return SegmentationResult.model_validate(data)
+        content = response.choices[0].message.content or "{}"
+        data = json.loads(content)
+        return SegmentationResult.model_validate(data)
+    except Exception as e:
+        logger.exception("Luna presentation segmentation API/parsing failed: %s", e)
+        raise
 
 
 def validate_and_normalize_segmentation(

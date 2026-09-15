@@ -108,18 +108,22 @@ def test_process_meeting_multi_presentation_flow(tmp_path, monkeypatch):
             output_dir=out_dir,
         )
 
-        assert (out_dir / "presentation_segments.json").is_file()
-        assert (out_dir / "raw_luna_segmentation.json").is_file()
-        assert (out_dir / "meeting_notes.zip").is_file()
-        assert (out_dir / "audit" / "provenance.json").is_file()
-        assert (out_dir / "01_first_talk" / "note.docx").is_file()
-        assert (out_dir / "02_second_talk" / "note.docx").is_file()
-        assert (out_dir / "note.docx").is_file()
-        assert (out_dir / "note.pdf").is_file()
-        assert (out_dir / "note.md").is_file()
-        assert (out_dir / "presentation_01_first_talk.docx").is_file()
-        assert (out_dir / "presentation_02_second_talk.docx").is_file()
+        assert [p.name for p in out_dir.iterdir()] == ["meeting_notes.zip"]
 
-        prov_data = json.loads((out_dir / "provenance.json").read_text(encoding="utf-8"))
-        assert prov_data["presentation_count"] == 2
-        assert prov_data["auto_segmentation_used"] is True
+        import zipfile
+        with zipfile.ZipFile(artifacts["zip"], "r") as zf:
+            names = zf.namelist()
+            assert "01_first_talk/note.docx" in names
+            assert "01_first_talk/note.pdf" in names
+            assert "01_first_talk/note.md" in names
+            assert "02_second_talk/note.docx" in names
+            assert "02_second_talk/note.pdf" in names
+            assert "02_second_talk/note.md" in names
+            assert "audit/provenance.json" in names
+            assert "audit/presentation_segments.json" in names
+
+            prov_data = json.loads(zf.read("audit/provenance.json").decode("utf-8"))
+            assert prov_data["presentation_count"] == 2
+            assert prov_data["auto_segmentation_used"] is True
+
+

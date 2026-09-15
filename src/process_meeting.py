@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any, Callable
@@ -230,49 +231,118 @@ def process_meeting(
     model_info = transcription_result["model_info"]
     runtime_info = transcription_result["runtime_info"]
 
-    report_progress(50, "Saving raw transcription output...", progress_callback)
-    transcript_json_path = out_dir / "transcript.json"
-    transcript_txt_path = out_dir / "transcript.txt"
+    with tempfile.TemporaryDirectory() as staging_dir_str:
+        staging_dir = Path(staging_dir_str)
+        transcript_dir = staging_dir / "transcript"
+        transcript_dir.mkdir(parents=True, exist_ok=True)
+        audit_dir = staging_dir / "audit"
+        audit_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(transcript_json_path, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "language": detected_lang,
-                "segments": segments,
-                "model_info": model_info,
-                "runtime_info": runtime_info,
-            },
-            f,
-            indent=2,
-            ensure_ascii=False,
-        )
+        report_progress(50, "Saving raw transcription output...", progress_callback)
+        transcript_json_path = transcript_dir / "transcript.json"
+        transcript_txt_path = transcript_dir / "transcript.txt"
 
-    with open(transcript_txt_path, "w", encoding="utf-8") as f:
-        f.write(f"Language: {detected_lang}\n\n")
-        for seg in segments:
-            f.write(f"[{seg['start']:.2f}s -> {seg['end']:.2f}s] {seg['text']}\n")
+        with open(transcript_json_path, "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "language": detected_lang,
+                    "segments": segments,
+                    "model_info": model_info,
+                    "runtime_info": runtime_info,
+                },
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
 
-    # Determine auto_segment policy
-    if auto_segment is None:
-        auto_segment = (note_type == "presentationSummary")
+        with open(transcript_txt_path, "w", encoding="utf-8") as f:
+            f.write(f"Language: {detected_lang}\n\n")
+            for seg in segments:
+                f.write(f"[{seg['start']:.2f}s -> {seg['end']:.2f}s] {seg['text']}\n")
 
-    presentation_ranges: list[PresentationRange] = []
-    raw_segmentation_result: SegmentationResult | None = None
+        # Determine auto_segment policy
+        if auto_segment is None:
+            auto_segment = (note_type == "presentationSummary")
 
-    if auto_segment:
-        report_progress(60, "Detecting presentation boundaries via Luna semantic detector...", progress_callback)
-        if cancel_checker and cancel_checker():
-            raise RuntimeError("Cancelled before presentation segmentation.")
+        presentation_ranges: list[PresentationRange] = []
+        raw_segmentation_result: SegmentationResult | None = None
 
-        try:
-            # Measure transcript length
-            total_chars = sum(len(s.get("text", "")) for s in segments)
-            LOGGER.info("Total transcript length: %d chars in %d segments", total_chars, len(segments))
+        if auto_segment:
+            report_progress(60, "Detecting presentation boundaries via Luna semantic detector...", progress_callback)
+            if cancel_checker and cancel_checker():
+                raise RuntimeError("Cancelled before presentation segmentation.")
 
-            raw_segmentation_result = segment_presentations_with_luna(segments)
-            presentation_ranges = validate_and_normalize_segmentation(segments, raw_segmentation_result)
-        except Exception as e:
-            LOGGER.warning("Luna presentation segmentation failed (%s). Falling back to 1 presentation.", e)
+            try:
+                # Measure transcript length
+                total_chars = sum(len(s.get("text", "")) for s in segments)
+                LOGGER.info("Total transcript length: %d chars in %d segments", total_chars, len(segments))
+
+                raw_segmentation_result = segment_presentations_with_luna(segments)
+                presentation_ranges = validate_and_normalize_segmentation(segments, raw_segmentation_result)
+            except Exception as e:
+                LOGGER.warning("Luna presentation segmentation failed (%s). Falling back to 1 presentation.", e)
+                last_seg_id = f"S{max(0, len(segments) - 1):04d}"
+                presentation_ranges = [
+                    PresentationRange(
+                        index=1,
+                        start_segment_id="S0000",
+                        end_segment_id=last_seg_id,
+                        title="Full Recording",
+                        boundary_confidence="high",
+                        is_presentation=True,
+                        block_type="presentation",
+                        decision_rationale="Fallback single presentation",
+                    )
+                ]
+
+            # Save raw_luna_segmentation.json to audit/
+            raw_luna_path = audit_dir / "raw_luna_segmentation.json"
+            if raw_segmentation_result is not None:
+                with open(raw_luna_path, "w", encoding="utf-8") as f:
+                    json.dump(raw_segmentation_result.model_dump(), f, indent=2, ensure_ascii=False)
+
+            # Filter blocks where is_presentation is True for note generation
+            pres_blocks = [r for r in presentation_ranges if getattr(r, "is_presentation", True)]
+            if not pres_blocks:
+                pres_blocks = presentation_ranges
+
+            # Save presentation_segments.json to audit/
+            seg_json_path = audit_dir / "presentation_segments.json"
+            seg_export_data = {
+                "raw_candidate_count": len(raw_segmentation_result.presentations) if raw_segmentation_result else 0,
+                "presentation_count": len(pres_blocks),
+                "total_block_count": len(presentation_ranges),
+                "blocks": [
+                    {
+                        "index": idx + 1,
+                        "title": getattr(r, "title", "Presentation"),
+                        "is_presentation": getattr(r, "is_presentation", True),
+                        "block_type": getattr(r, "block_type", "presentation"),
+                        "start_segment_id": getattr(r, "start_segment_id", "S0000"),
+                        "end_segment_id": getattr(r, "end_segment_id", "S0000"),
+                        "start_time_seconds": segments[r.start_idx]["start"] if hasattr(r, "start_idx") and r.start_idx < len(segments) else 0.0,
+                        "end_time_seconds": segments[r.end_idx]["end"] if hasattr(r, "end_idx") and r.end_idx < len(segments) else 0.0,
+                        "boundary_confidence": getattr(r, "boundary_confidence", "high"),
+                        "start_evidence": [e.model_dump() for e in getattr(r, "start_evidence", [])],
+                        "decision_rationale": getattr(r, "decision_rationale", ""),
+                    }
+                    for idx, r in enumerate(presentation_ranges)
+                ],
+                "presentations": [
+                    {
+                        "index": idx + 1,
+                        "title": getattr(r, "title", "Presentation"),
+                        "start_segment_id": getattr(r, "start_segment_id", "S0000"),
+                        "end_segment_id": getattr(r, "end_segment_id", "S0000"),
+                        "start_time_seconds": segments[r.start_idx]["start"] if hasattr(r, "start_idx") and r.start_idx < len(segments) else 0.0,
+                        "end_time_seconds": segments[r.end_idx]["end"] if hasattr(r, "end_idx") and r.end_idx < len(segments) else 0.0,
+                    }
+                    for idx, r in enumerate(pres_blocks)
+                ],
+            }
+            with open(seg_json_path, "w", encoding="utf-8") as f:
+                json.dump(seg_export_data, f, indent=2, ensure_ascii=False)
+        else:
             last_seg_id = f"S{max(0, len(segments) - 1):04d}"
             presentation_ranges = [
                 PresentationRange(
@@ -283,407 +353,197 @@ def process_meeting(
                     boundary_confidence="high",
                     is_presentation=True,
                     block_type="presentation",
-                    decision_rationale="Fallback single presentation",
+                    decision_rationale="No auto-segmentation policy",
                 )
             ]
-
-        # Save raw_luna_segmentation.json
-        raw_luna_path = out_dir / "raw_luna_segmentation.json"
-        if raw_segmentation_result is not None:
-            with open(raw_luna_path, "w", encoding="utf-8") as f:
-                json.dump(raw_segmentation_result.model_dump(), f, indent=2, ensure_ascii=False)
-
-        # Filter blocks where is_presentation is True for note generation
-        pres_blocks = [r for r in presentation_ranges if getattr(r, "is_presentation", True)]
-        if not pres_blocks:
             pres_blocks = presentation_ranges
 
-        # Save presentation_segments.json with raw count, confidence, rationale, and block classification
-        seg_json_path = out_dir / "presentation_segments.json"
-        seg_export_data = {
-            "raw_candidate_count": len(raw_segmentation_result.presentations) if raw_segmentation_result else 0,
-            "presentation_count": len(pres_blocks),
-            "total_block_count": len(presentation_ranges),
-            "blocks": [
+        report_progress(70, f"Generating note(s) for {len(pres_blocks)} presentation(s)...", progress_callback)
+        if cancel_checker and cancel_checker():
+            raise RuntimeError("Cancelled before note generation.")
+
+        generated_notes: list[dict[str, Any]] = []
+
+        for idx, item in enumerate(pres_blocks):
+            p_index = idx + 1
+            start_idx = item.start_idx if hasattr(item, "start_idx") else item[0]
+            end_idx = item.end_idx if hasattr(item, "end_idx") else item[1]
+            title = item.title if hasattr(item, "title") else item[2]
+
+            LOGGER.info("Processing presentation %d/%d [%d..%d]: %s", p_index, len(pres_blocks), start_idx, end_idx, title)
+
+            sliced_api_segments = [
                 {
-                    "index": idx + 1,
-                    "title": getattr(r, "title", "Presentation"),
-                    "is_presentation": getattr(r, "is_presentation", True),
-                    "block_type": getattr(r, "block_type", "presentation"),
-                    "start_segment_id": getattr(r, "start_segment_id", "S0000"),
-                    "end_segment_id": getattr(r, "end_segment_id", "S0000"),
-                    "start_time_seconds": segments[r.start_idx]["start"] if hasattr(r, "start_idx") and r.start_idx < len(segments) else 0.0,
-                    "end_time_seconds": segments[r.end_idx]["end"] if hasattr(r, "end_idx") and r.end_idx < len(segments) else 0.0,
-                    "boundary_confidence": getattr(r, "boundary_confidence", "high"),
-                    "start_evidence": [e.model_dump() for e in getattr(r, "start_evidence", [])],
-                    "decision_rationale": getattr(r, "decision_rationale", ""),
+                    "id": i,
+                    "start": float(segments[i]["start"]),
+                    "end": float(segments[i]["end"]),
+                    "text": str(segments[i]["text"]),
                 }
-                for idx, r in enumerate(presentation_ranges)
-            ],
-            "presentations": [
-                {
-                    "index": idx + 1,
-                    "title": getattr(r, "title", "Presentation"),
-                    "start_segment_id": getattr(r, "start_segment_id", "S0000"),
-                    "end_segment_id": getattr(r, "end_segment_id", "S0000"),
-                    "start_time_seconds": segments[r.start_idx]["start"] if hasattr(r, "start_idx") and r.start_idx < len(segments) else 0.0,
-                    "end_time_seconds": segments[r.end_idx]["end"] if hasattr(r, "end_idx") and r.end_idx < len(segments) else 0.0,
-                }
-                for idx, r in enumerate(pres_blocks)
-            ],
-        }
-        with open(seg_json_path, "w", encoding="utf-8") as f:
-            json.dump(seg_export_data, f, indent=2, ensure_ascii=False)
-    else:
-        last_seg_id = f"S{max(0, len(segments) - 1):04d}"
-        presentation_ranges = [
-            PresentationRange(
-                index=1,
-                start_segment_id="S0000",
-                end_segment_id=last_seg_id,
-                title="Full Recording",
-                boundary_confidence="high",
-                is_presentation=True,
-                block_type="presentation",
-                decision_rationale="No auto-segmentation policy",
+                for i in range(start_idx, end_idx + 1)
+            ]
+
+            sliced_transcript = transcript_for_prompt(sliced_api_segments)
+            if title and title != "Full Recording":
+                p_context = f"{context}\nPresentation Title: {title}" if context else f"Presentation Title: {title}"
+            else:
+                p_context = context
+
+            res = create_note_with_api(
+                transcript_text=sliced_transcript,
+                language=note_language,
+                meeting_context=p_context,
+                note_preset="presentationSummary" if auto_segment else note_type,
             )
-        ]
-        pres_blocks = presentation_ranges
 
-    report_progress(70, f"Generating note(s) for {len(pres_blocks)} presentation(s)...", progress_callback)
-    if cancel_checker and cancel_checker():
-        raise RuntimeError("Cancelled before note generation.")
+            if isinstance(res, tuple):
+                note_obj = res[1].final_note
+            elif hasattr(res, "final_note"):
+                note_obj = res.final_note
+            else:
+                note_obj = res
 
-    generated_notes: list[dict[str, Any]] = []
+            sanitized_note = sanitize_grounding(note_obj, start_idx, end_idx)
+            start_t = segments[start_idx]["start"] if start_idx < len(segments) else 0.0
+            end_t = segments[end_idx]["end"] if end_idx < len(segments) else 0.0
 
-    for idx, item in enumerate(pres_blocks):
-        p_index = idx + 1
-        start_idx = item.start_idx if hasattr(item, "start_idx") else item[0]
-        end_idx = item.end_idx if hasattr(item, "end_idx") else item[1]
-        title = item.title if hasattr(item, "title") else item[2]
+            generated_notes.append(
+                {
+                    "index": p_index,
+                    "title": title,
+                    "start_idx": start_idx,
+                    "end_idx": end_idx,
+                    "start_time": start_t,
+                    "end_time": end_t,
+                    "note": sanitized_note,
+                }
+            )
 
-        LOGGER.info("Processing presentation %d/%d [%d..%d]: %s", p_index, len(pres_blocks), start_idx, end_idx, title)
+        report_progress(85, "Rendering output documents (DOCX, PDF, TXT, MD)...", progress_callback)
 
-        sliced_api_segments = [
-            {
-                "id": i,
-                "start": float(segments[i]["start"]),
-                "end": float(segments[i]["end"]),
-                "text": str(segments[i]["text"]),
-            }
-            for i in range(start_idx, end_idx + 1)
-        ]
-
-        sliced_transcript = transcript_for_prompt(sliced_api_segments)
-        if title and title != "Full Recording":
-            p_context = f"{context}\nPresentation Title: {title}" if context else f"Presentation Title: {title}"
-        else:
-            p_context = context
-
-        res = create_note_with_api(
-            transcript_text=sliced_transcript,
-            language=note_language,
-            meeting_context=p_context,
-            note_preset="presentationSummary" if auto_segment else note_type,
-        )
-
-        if isinstance(res, tuple):
-            note_obj = res[1].final_note
-        elif hasattr(res, "final_note"):
-            note_obj = res.final_note
-        else:
-            note_obj = res
-
-        sanitized_note = sanitize_grounding(note_obj, start_idx, end_idx)
-        start_t = segments[start_idx]["start"] if start_idx < len(segments) else 0.0
-        end_t = segments[end_idx]["end"] if end_idx < len(segments) else 0.0
-
-        generated_notes.append(
-            {
-                "index": p_index,
-                "title": title,
-                "start_idx": start_idx,
-                "end_idx": end_idx,
-                "start_time": start_t,
-                "end_time": end_t,
-                "note": sanitized_note,
-            }
-        )
-
-    report_progress(85, "Rendering output documents (DOCX, PDF, TXT, MD)...", progress_callback)
-
-    docx_path = out_dir / "note.docx"
-    pdf_path = out_dir / "note.pdf"
-    txt_path = out_dir / "note.txt"
-    md_path = out_dir / "note.md"
-    provenance_path = out_dir / "provenance.json"
-
-    if len(generated_notes) == 1:
-        single_n = generated_notes[0]["note"]
-        render_docx(
-            note=single_n,
-            output_path=docx_path,
-            source_name=input_path.name,
-            language=note_language,
-            note_preset=note_type,
-        )
-        render_pdf(
-            note=single_n,
-            output_path=pdf_path,
-            source_name=input_path.name,
-            language=note_language,
-            note_preset=note_type,
-        )
-        md_content = render_note_markdown(single_n, language=note_language, note_preset=note_type)
-        md_path.write_text(md_content, encoding="utf-8")
-        txt_path.write_text(md_content, encoding="utf-8")
-    else:
-        # Multi-presentation rendering: per-presentation files + deterministic index note.docx/pdf/md
-        index_lines = []
-        index_lines.append("# Deterministic Presentation Summary Index\n")
-        index_lines.append(f"- **Source File**: `{input_path.name}`")
-        index_lines.append(f"- **Detected Presentations**: `{len(generated_notes)}`\n")
-        index_lines.append("## Overview of Presentations\n")
-
+        # Render per-presentation notes in per-presentation staging folders (01_<title>/note.docx etc)
         for item in generated_notes:
             p_idx = item["index"]
             p_title = item["title"]
-            s_str = format_seconds(item["start_time"])
-            e_str = format_seconds(item["end_time"])
             slug = slugify_title(p_title)
-            p_prefix = f"presentation_{p_idx:02d}_{slug}"
+            p_folder = staging_dir / f"{p_idx:02d}_{slug}"
+            p_folder.mkdir(parents=True, exist_ok=True)
 
-            p_docx = out_dir / f"{p_prefix}.docx"
-            p_pdf = out_dir / f"{p_prefix}.pdf"
-            p_txt = out_dir / f"{p_prefix}.txt"
-            p_md = out_dir / f"{p_prefix}.md"
+            p_docx = p_folder / "note.docx"
+            p_pdf = p_folder / "note.pdf"
+            p_txt = p_folder / "note.txt"
+            p_md = p_folder / "note.md"
 
             render_docx(
                 note=item["note"],
                 output_path=p_docx,
                 source_name=f"{input_path.name} [{p_title}]",
                 language=note_language,
-                note_preset="presentationSummary",
+                note_preset="presentationSummary" if auto_segment else note_type,
             )
             render_pdf(
                 note=item["note"],
                 output_path=p_pdf,
                 source_name=f"{input_path.name} [{p_title}]",
                 language=note_language,
-                note_preset="presentationSummary",
+                note_preset="presentationSummary" if auto_segment else note_type,
             )
-            p_md_text = render_note_markdown(item["note"], language=note_language, note_preset="presentationSummary")
+            p_md_text = render_note_markdown(item["note"], language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
             p_md.write_text(p_md_text, encoding="utf-8")
             p_txt.write_text(p_md_text, encoding="utf-8")
 
-            index_lines.append(f"- **{p_idx:02d}** — `{p_title}` ({s_str} – {e_str}) $\\rightarrow$ `{p_docx.name}`")
+        commit_sha = get_git_commit_sha(repo_root)
 
-        index_lines.append("\n" + "=" * 40 + "\n")
-        for item in generated_notes:
-            index_lines.append(f"## Presentation {item['index']:02d}: {item['title']}\n")
-            index_lines.append(render_note_markdown(item["note"], language=note_language, note_preset="presentationSummary"))
-            index_lines.append("\n" + "-" * 30 + "\n")
+        prep_codec = getattr(prep, "codec", "pcm_s16le")
+        if type(prep_codec).__name__ == "MagicMock":
+            prep_codec = "pcm_s16le"
 
-        full_index_text = "\n".join(index_lines)
-        md_path.write_text(full_index_text, encoding="utf-8")
-        txt_path.write_text(full_index_text, encoding="utf-8")
+        prep_rate = getattr(prep, "sample_rate", 16000)
+        if type(prep_rate).__name__ == "MagicMock":
+            prep_rate = 16000
 
-        # Build combined MeetingNote containing all N presentations for combined note.docx and note.pdf
-        combined_sections = []
-        combined_actions = []
-        combined_decisions = []
-        combined_questions = []
+        prep_channels = getattr(prep, "channels", 1)
+        if type(prep_channels).__name__ == "MagicMock":
+            prep_channels = 1
 
-        for item in generated_notes:
-            p_idx = item["index"]
-            p_title = item["title"]
-            p_note = item["note"]
+        prep_filename = prep.path.name if (hasattr(prep, "path") and hasattr(prep.path, "name") and type(prep.path.name).__name__ != "MagicMock") else "prepared.wav"
 
-            header_sec = ThematicSection(
-                heading=f"Presentation {p_idx:02d}: {p_title}",
-                paragraphs=p_note.summary if p_note.summary else [],
-                bullet_points=[],
-            )
-            combined_sections.append(header_sec)
-            combined_sections.extend(p_note.thematic_sections)
-            combined_actions.extend(p_note.actions)
-            combined_decisions.extend(p_note.decisions)
-            combined_questions.extend(p_note.open_questions)
+        provenance_data = {
+            "original_source": {
+                "filename": orig_filename,
+                "size_bytes": orig_size_bytes,
+                "has_video_stream": has_video_stream,
+                "source_video_discarded": source_video_discarded,
+            },
+            "audio_derivative": {
+                "filename": prep_filename,
+                "size_bytes": derived_wav_size,
+                "codec": str(prep_codec),
+                "sample_rate": prep_rate,
+                "channels": prep_channels,
+            },
+            "transcription_telemetry": {
+                "audio_duration_seconds": audio_seconds,
+                "wall_time_seconds": wall_seconds,
+                "real_time_factor": rtf,
+            },
+            "whisper_repo_commit": commit_sha,
+            "whisper_cpp_version": runtime_info["version"],
+            "backend": runtime_info["backend"],
+            "model_id": model_info["id"],
+            "model_file": model_info["file"],
+            "model_sha256": model_info["sha256"],
+            "quantization": model_info["quantization"],
+            "recording_language_requested": recording_language,
+            "recording_language_detected": detected_lang,
+            "note_preset": note_type,
+            "note_language": note_language,
+            "has_context": bool(context and context.strip()),
+            "has_vocabulary": bool(vocabulary and vocabulary.strip()),
+            "auto_segmentation_used": auto_segment,
+            "presentation_count": len(pres_blocks),
+            "total_block_count": len(presentation_ranges),
+            "detected_presentations": [
+                {
+                    "index": i + 1,
+                    "title": r.title if hasattr(r, "title") else r[2],
+                    "segment_range": [r.start_idx if hasattr(r, "start_idx") else r[0], r.end_idx if hasattr(r, "end_idx") else r[1]],
+                }
+                for i, r in enumerate(pres_blocks)
+            ],
+            "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
 
-        combined_note = MeetingNote(
-            title=GroundedStatement(
-                text=f"Combined Presentation Summaries ({len(generated_notes)} presentations)",
-                source_segments=[0],
-            ),
-            summary=[],
-            thematic_sections=combined_sections,
-            decisions=combined_decisions,
-            actions=combined_actions,
-            open_questions=combined_questions,
-        )
+        provenance_path = audit_dir / "provenance.json"
+        with open(provenance_path, "w", encoding="utf-8") as f:
+            json.dump(provenance_data, f, indent=2)
 
-        render_docx(
-            note=combined_note,
-            output_path=docx_path,
-            source_name=input_path.name,
-            language=note_language,
-            note_preset="presentationSummary",
-        )
-        render_pdf(
-            note=combined_note,
-            output_path=pdf_path,
-            source_name=input_path.name,
-            language=note_language,
-            note_preset="presentationSummary",
-        )
+        summary_report_path = audit_dir / "summary_report.json"
+        with open(summary_report_path, "w", encoding="utf-8") as f:
+            json.dump(provenance_data, f, indent=2)
 
-    commit_sha = get_git_commit_sha(repo_root)
+        # Build meeting_notes.zip in out_dir
+        zip_path = out_dir / "meeting_notes.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root_path, dirs, files in os.walk(staging_dir):
+                for file_name in sorted(files):
+                    full_p = Path(root_path) / file_name
+                    rel_p = full_p.relative_to(staging_dir)
+                    zf.write(full_p, arcname=str(rel_p))
 
-    prep_codec = getattr(prep, "codec", "pcm_s16le")
-    if type(prep_codec).__name__ == "MagicMock":
-        prep_codec = "pcm_s16le"
+        # Purge any non-zip files/dirs in out_dir so OUTPUT_DIR contains ONLY meeting_notes.zip
+        for item in out_dir.iterdir():
+            if item.name != "meeting_notes.zip":
+                try:
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
+                except Exception as e:
+                    LOGGER.warning("Failed to clean file %s from out_dir: %s", item, e)
 
-    prep_rate = getattr(prep, "sample_rate", 16000)
-    if type(prep_rate).__name__ == "MagicMock":
-        prep_rate = 16000
+        report_progress(100, "Meeting note processing completed.", progress_callback)
 
-    prep_channels = getattr(prep, "channels", 1)
-    if type(prep_channels).__name__ == "MagicMock":
-        prep_channels = 1
-
-    prep_filename = prep.path.name if (hasattr(prep, "path") and hasattr(prep.path, "name") and type(prep.path.name).__name__ != "MagicMock") else "prepared.wav"
-
-    provenance_data = {
-        "original_source": {
-            "filename": orig_filename,
-            "size_bytes": orig_size_bytes,
-            "has_video_stream": has_video_stream,
-            "source_video_discarded": source_video_discarded,
-        },
-        "audio_derivative": {
-            "filename": prep_filename,
-            "size_bytes": derived_wav_size,
-            "codec": str(prep_codec),
-            "sample_rate": prep_rate,
-            "channels": prep_channels,
-        },
-        "transcription_telemetry": {
-            "audio_duration_seconds": audio_seconds,
-            "wall_time_seconds": wall_seconds,
-            "real_time_factor": rtf,
-        },
-        "whisper_repo_commit": commit_sha,
-        "whisper_cpp_version": runtime_info["version"],
-        "backend": runtime_info["backend"],
-        "model_id": model_info["id"],
-        "model_file": model_info["file"],
-        "model_sha256": model_info["sha256"],
-        "quantization": model_info["quantization"],
-        "recording_language_requested": recording_language,
-        "recording_language_detected": detected_lang,
-        "note_preset": note_type,
-        "note_language": note_language,
-        "has_context": bool(context and context.strip()),
-        "has_vocabulary": bool(vocabulary and vocabulary.strip()),
-        "auto_segmentation_used": auto_segment,
-        "presentation_count": len(pres_blocks),
-        "total_block_count": len(presentation_ranges),
-        "detected_presentations": [
-            {
-                "index": i + 1,
-                "title": r.title if hasattr(r, "title") else r[2],
-                "segment_range": [r.start_idx if hasattr(r, "start_idx") else r[0], r.end_idx if hasattr(r, "end_idx") else r[1]],
-            }
-            for i, r in enumerate(pres_blocks)
-        ],
-        "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
-
-    with open(provenance_path, "w", encoding="utf-8") as f:
-        json.dump(provenance_data, f, indent=2)
-
-    # Build per-presentation subfolders and audit folder
-    audit_dir = out_dir / "audit"
-    audit_dir.mkdir(exist_ok=True)
-
-    audit_files = [
-        provenance_path,
-        transcript_json_path,
-        transcript_txt_path,
-        out_dir / "presentation_segments.json",
-        out_dir / "raw_luna_segmentation.json",
-        out_dir / "summary_report.json",
-        docx_path,
-        pdf_path,
-        md_path,
-    ]
-    for af in audit_files:
-        if af.is_file():
-            shutil.copy2(af, audit_dir / af.name)
-
-    # Copy per-presentation artifacts to per-presentation folders
-    for item in generated_notes:
-        p_idx = item["index"]
-        p_title = item["title"]
-        slug = slugify_title(p_title)
-        p_folder_name = f"{p_idx:02d}_{slug}"
-        p_folder = out_dir / p_folder_name
-        p_folder.mkdir(exist_ok=True)
-
-        if len(generated_notes) == 1:
-            for ext in [".docx", ".pdf", ".txt", ".md"]:
-                src_f = out_dir / f"note{ext}"
-                if src_f.is_file():
-                    shutil.copy2(src_f, p_folder / f"note{ext}")
-        else:
-            p_prefix = f"presentation_{p_idx:02d}_{slug}"
-            for ext in [".docx", ".pdf", ".txt", ".md"]:
-                src_f = out_dir / f"{p_prefix}{ext}"
-                if src_f.is_file():
-                    shutil.copy2(src_f, p_folder / f"note{ext}")
-
-    # Package everything into meeting_notes.zip
-    zip_path = out_dir / "meeting_notes.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        if md_path.is_file():
-            zf.write(md_path, arcname="meeting_notes.md")
-        if docx_path.is_file():
-            zf.write(docx_path, arcname="meeting_notes.docx")
-        if pdf_path.is_file():
-            zf.write(pdf_path, arcname="meeting_notes.pdf")
-
-        for item in generated_notes:
-            p_idx = item["index"]
-            p_title = item["title"]
-            slug = slugify_title(p_title)
-            p_folder_name = f"{p_idx:02d}_{slug}"
-            p_folder = out_dir / p_folder_name
-            if p_folder.is_dir():
-                for pf in p_folder.iterdir():
-                    if pf.is_file():
-                        zf.write(pf, arcname=f"{p_folder_name}/{pf.name}")
-
-        for af in audit_dir.iterdir():
-            if af.is_file():
-                zf.write(af, arcname=f"audit/{af.name}")
-
-    report_progress(100, "Meeting note processing completed.", progress_callback)
-
-    res_dict = {
-        "docx": docx_path,
-        "pdf": pdf_path,
-        "txt": txt_path,
-        "md": md_path,
-        "transcript_json": transcript_json_path,
-        "transcript_txt": transcript_txt_path,
-        "provenance": provenance_path,
-        "zip": zip_path,
-    }
-    if auto_segment and (out_dir / "presentation_segments.json").is_file():
-        res_dict["presentation_segments"] = out_dir / "presentation_segments.json"
-    if (out_dir / "raw_luna_segmentation.json").is_file():
-        res_dict["raw_luna_segmentation"] = out_dir / "raw_luna_segmentation.json"
-    return res_dict
+        return {"zip": zip_path}
 
 
 def main() -> int:

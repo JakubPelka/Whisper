@@ -8,9 +8,15 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
+
+src_path = Path(__file__).resolve().parent.parent / "src"
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
 
 from generate_meeting_note import GroundedStatement, MeetingNote, VerificationResult
 from process_meeting import process_meeting
@@ -71,16 +77,22 @@ def test_process_meeting_flow(tmp_path, mock_meeting_note, monkeypatch):
         assert call_kwargs["note_preset"] == "serviceNote"
         assert call_kwargs["meeting_context"] == "Test context"
 
-    assert artifacts["docx"].is_file()
-    assert artifacts["pdf"].is_file()
-    assert artifacts["txt"].is_file()
-    assert artifacts["md"].is_file()
-    assert artifacts["transcript_json"].is_file()
-    assert artifacts["transcript_txt"].is_file()
-    assert artifacts["provenance"].is_file()
+    assert artifacts["zip"].is_file()
+    # Verify ZIP-Only output contract in output_dir
+    assert [p.name for p in out_dir.iterdir()] == ["meeting_notes.zip"]
 
-    with open(artifacts["provenance"], "r", encoding="utf-8") as f:
-        prov = json.load(f)
+    with zipfile.ZipFile(artifacts["zip"], "r") as zf:
+        names = zf.namelist()
+        assert "01_full_recording/note.docx" in names
+        assert "01_full_recording/note.pdf" in names
+        assert "01_full_recording/note.txt" in names
+        assert "01_full_recording/note.md" in names
+        assert "audit/provenance.json" in names
+        assert "transcript/transcript.json" in names
+        assert "transcript/transcript.txt" in names
+
+        prov_content = zf.read("audit/provenance.json").decode("utf-8")
+        prov = json.loads(prov_content)
 
     assert prov["whisper_cpp_version"] == "1.8.6"
     assert prov["backend"] == "CUDA"
@@ -90,8 +102,7 @@ def test_process_meeting_flow(tmp_path, mock_meeting_note, monkeypatch):
     assert prov["has_vocabulary"] is True
 
     # Ensure no transcript or note content leaks into provenance.json
-    prov_str = json.dumps(prov)
-    assert "This is a test summary." not in prov_str
+    assert "This is a test summary." not in prov_content
 
 
 def test_process_meeting_video_cleanup_and_provenance(tmp_path, mock_meeting_note, monkeypatch):
@@ -136,10 +147,11 @@ def test_process_meeting_video_cleanup_and_provenance(tmp_path, mock_meeting_not
 
     # Assert source video file unlinked from workspace after audio extraction verification
     assert not video_path.exists()
+    assert [p.name for p in out_dir.iterdir()] == ["meeting_notes.zip"]
 
-    # Assert provenance records original source metadata
-    with open(artifacts["provenance"], "r", encoding="utf-8") as f:
-        prov = json.load(f)
+    # Assert provenance records original source metadata inside zip
+    with zipfile.ZipFile(artifacts["zip"], "r") as zf:
+        prov = json.loads(zf.read("audit/provenance.json").decode("utf-8"))
 
     assert "original_source" in prov
     assert prov["original_source"]["filename"] == "video_input.mp4"
@@ -147,4 +159,3 @@ def test_process_meeting_video_cleanup_and_provenance(tmp_path, mock_meeting_not
     assert prov["original_source"]["has_video_stream"] is True
     assert prov["original_source"]["source_video_discarded"] is True
     assert "audio_derivative" in prov
-
