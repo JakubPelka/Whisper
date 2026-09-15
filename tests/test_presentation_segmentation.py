@@ -268,4 +268,75 @@ def test_segment_presentations_with_luna_test_guard_no_api_calls(monkeypatch):
     assert res.presentations[0].start_segment_id == "S0000"
     assert res.presentations[0].end_segment_id == "S0004"
     assert res.presentations[0].title == "Full Recording"
+    assert res.presentations[0].is_presentation is True
+
+
+def test_conference_housekeeping_and_multi_keynote_segmentation():
+    segments = make_dummy_segments(30)
+    result = SegmentationResult(
+        version=1,
+        presentation_count=2,
+        presentations=[
+            PresentationRange(
+                index=1,
+                start_segment_id="S0000",
+                end_segment_id="S0004",
+                title="Welcome and Housekeeping",
+                boundary_confidence="high",
+                is_presentation=False,
+                block_type="intro",
+                start_evidence=[BoundaryEvidence(segment_id="S0000", signal="housekeeping")],
+                decision_rationale="Moderator introduction and logistics.",
+            ),
+            PresentationRange(
+                index=2,
+                start_segment_id="S0005",
+                end_segment_id="S0014",
+                title="Carol Williams Keynote",
+                boundary_confidence="high",
+                is_presentation=True,
+                block_type="presentation",
+                start_evidence=[BoundaryEvidence(segment_id="S0005", signal="moderator_intro")],
+                decision_rationale="Keynote speech by Carol Williams.",
+            ),
+            PresentationRange(
+                index=3,
+                start_segment_id="S0015",
+                end_segment_id="S0019",
+                title="Coffee Break",
+                boundary_confidence="high",
+                is_presentation=False,
+                block_type="break",
+                start_evidence=[BoundaryEvidence(segment_id="S0015", signal="pause_transition")],
+                decision_rationale="Intermission audio gap.",
+            ),
+            PresentationRange(
+                index=4,
+                start_segment_id="S0020",
+                end_segment_id="S0029",
+                title="Kit Stoner BCT Update",
+                boundary_confidence="high",
+                is_presentation=True,
+                block_type="presentation",
+                start_evidence=[BoundaryEvidence(segment_id="S0020", signal="speaker_change")],
+                decision_rationale="Presentation by Kit Stoner on BCT updates.",
+            ),
+        ],
+    )
+    ranges = validate_and_normalize_segmentation(segments, result)
+    assert len(ranges) == 4
+    assert ranges[0].is_presentation is False
+    assert ranges[0].block_type == "intro"
+    assert ranges[1].is_presentation is True
+    assert ranges[1].title == "Carol Williams Keynote"
+    assert ranges[2].is_presentation is False
+    assert ranges[2].block_type == "break"
+    assert ranges[3].is_presentation is True
+    assert ranges[3].title == "Kit Stoner BCT Update"
+
+    pres_only = [r for r in ranges if r.is_presentation]
+    assert len(pres_only) == 2
+    assert pres_only[0].title == "Carol Williams Keynote"
+    assert pres_only[1].title == "Kit Stoner BCT Update"
+
 

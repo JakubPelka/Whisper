@@ -109,6 +109,11 @@ def test_process_meeting_multi_presentation_flow(tmp_path, monkeypatch):
         )
 
         assert (out_dir / "presentation_segments.json").is_file()
+        assert (out_dir / "raw_luna_segmentation.json").is_file()
+        assert (out_dir / "meeting_notes.zip").is_file()
+        assert (out_dir / "audit" / "provenance.json").is_file()
+        assert (out_dir / "01_first_talk" / "note.docx").is_file()
+        assert (out_dir / "02_second_talk" / "note.docx").is_file()
         assert (out_dir / "note.docx").is_file()
         assert (out_dir / "note.pdf").is_file()
         assert (out_dir / "note.md").is_file()

@@ -31,8 +31,33 @@ class PresentationRange(BaseModel):
     start_segment_id: str
     end_segment_id: str
     title: str
-    boundary_confidence: Literal["high", "medium", "low"]
+    boundary_confidence: Literal["high", "medium", "low"] = "high"
+    is_presentation: bool = True
+    block_type: Literal["presentation", "intro", "outro", "break", "housekeeping", "other"] = "presentation"
     start_evidence: list[BoundaryEvidence] = Field(default_factory=list)
+    decision_rationale: str = ""
+
+    @property
+    def start_idx(self) -> int:
+        idx = parse_segment_id(self.start_segment_id)
+        return idx if idx is not None else 0
+
+    @property
+    def end_idx(self) -> int:
+        idx = parse_segment_id(self.end_segment_id)
+        return idx if idx is not None else 0
+
+    def __getitem__(self, item: int | slice) -> Any:
+        tup = (self.start_idx, self.end_idx, self.title, self.is_presentation, self.block_type)
+        return tup[item]
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, tuple):
+            if len(other) == 3:
+                return (self.start_idx, self.end_idx, self.title) == other
+            elif len(other) == 5:
+                return (self.start_idx, self.end_idx, self.title, self.is_presentation, self.block_type) == other
+        return super().__eq__(other)
 
 
 class SegmentationResult(BaseModel):
@@ -74,34 +99,60 @@ def prepare_prompt_transcript(segments: list[dict[str, Any]]) -> str:
 
 SEGMENTATION_SYSTEM_PROMPT = """You are Luna, an expert semantic presentation boundary detector for conference and meeting recordings.
 
-Your task is to analyze the complete timestamped transcript and identify logical presentation / talk boundaries.
+Your task is to analyze the complete timestamped transcript and break it into contiguous, non-overlapping blocks covering the entire recording from the first segment to the last.
 
-### KEY PRINCIPLES:
-1. WHEN UNCERTAIN, KEEP MATERIAL TOGETHER. Prefer under-splitting over over-splitting.
-2. Q&A, audience questions, speaker answers, and short moderator interactions belong to the presentation they follow.
-3. Low-confidence boundaries alone MUST NOT cause a split.
-4. Do NOT split for: slide changes, case studies, examples, panel discussions within the same session, or technical pauses.
-5. Strong signals of a new presentation include a combination of:
-   - Previous speaker formally closes / receives applause / moderator closes previous topic.
-   - Moderator introduces a new speaker / new topic.
-   - New speaker introduces themselves / formal opening ("jag ska prata om...", "dzisiaj opowiem o...", "my presentation today...").
-   - Clear thematic reset + new talk context.
+### CONFLICT AND BLOCK CLASSIFICATION RULES:
+1. Classify each block by setting `is_presentation` (true/false) and `block_type`:
+   - "presentation": A distinct keynote, talk, lecture, or standalone presentation (is_presentation: true).
+   - "intro": Opening remarks, welcome by moderators, agenda, housekeeping notes (is_presentation: false).
+   - "outro": Closing remarks, wrap-up, thank yous, admin announcements (is_presentation: false).
+   - "break": Coffee breaks, lunch breaks, audio gaps, pause transitions (is_presentation: false).
+   - "housekeeping": Room logistics, Q&A rules, technical announcements (is_presentation: false).
+   - "other": Miscellaneous non-presentation content (is_presentation: false).
+
+2. BOUNDARY RECOGNITION (HIGH CONFIDENCE SIGNALS):
+   - Previous speaker formally closes / receives applause + moderator introduces a new named speaker + new speaker opens talk ("jag ska prata om...", "today I will present...", "nazywam się..."). Mark these boundaries as HIGH confidence.
+   - Distinct talk transitions between separate keynotes are ALWAYS HIGH confidence boundaries.
+
+3. UNDER-SPLITTING POLICY FOR INTERNAL TALK MATERIAL:
+   - Q&A, audience questions, slide transitions, case studies, and internal panel discussions BELONG to the presentation they follow (do NOT split them into separate presentations).
+   - Low confidence boundaries inside a single talk must NOT cause a split.
+
+4. FULL COVERAGE INVARIANT:
+   - Blocks MUST be contiguous without gaps or overlaps. Every segment in the transcript must belong to exactly one block.
 
 ### OUTPUT CONTRACT:
 Return STRICT JSON only matching this schema:
 {
   "version": 1,
-  "presentation_count": <number>,
+  "presentation_count": <number of blocks with is_presentation=true>,
   "presentations": [
     {
       "index": 1,
       "start_segment_id": "S0000",
-      "end_segment_id": "S0120",
-      "title": "<Short grounded working title>",
+      "end_segment_id": "S0015",
+      "title": "Welcome and Housekeeping",
       "boundary_confidence": "high",
+      "is_presentation": false,
+      "block_type": "intro",
       "start_evidence": [
-        {"segment_id": "S0000", "signal": "formal_opening"}
-      ]
+        {"segment_id": "S0000", "signal": "housekeeping"}
+      ],
+      "decision_rationale": "Moderator welcome and housekeeping rules."
+    },
+    {
+      "index": 2,
+      "start_segment_id": "S0016",
+      "end_segment_id": "S0450",
+      "title": "Carol Williams Keynote",
+      "boundary_confidence": "high",
+      "is_presentation": true,
+      "block_type": "presentation",
+      "start_evidence": [
+        {"segment_id": "S0016", "signal": "moderator_intro"},
+        {"segment_id": "S0017", "signal": "speaker_change"}
+      ],
+      "decision_rationale": "Formal moderator introduction of Carol Williams followed by keynote speech."
     }
   ]
 }
@@ -148,7 +199,10 @@ def segment_presentations_with_luna(
                         end_segment_id=end_seg_id,
                         title="Full Recording",
                         boundary_confidence="high",
+                        is_presentation=True,
+                        block_type="presentation",
                         start_evidence=[BoundaryEvidence(segment_id="S0000", signal="test_stub")],
+                        decision_rationale="Test guard no-API stub",
                     )
                 ],
             )
@@ -175,28 +229,40 @@ def segment_presentations_with_luna(
 def validate_and_normalize_segmentation(
     segments: list[dict[str, Any]],
     result: SegmentationResult | None,
-) -> list[tuple[int, int, str]]:
+) -> list[PresentationRange]:
     """Validate segmentation result for structural correctness and full coverage.
 
     Invariants:
-    1. Returns non-empty list of ranges (start_idx, end_idx, title).
+    1. Returns non-empty list of PresentationRange objects.
     2. Chronologically ordered, contiguous, non-overlapping.
     3. Covers all segments from 0 to len(segments) - 1.
-    4. If any rule is violated, falls back to single presentation [(0, len(segments) - 1, "Full Recording")].
+    4. If any rule is violated, falls back to single presentation.
     """
     total_segments = len(segments)
-    fallback = [(0, max(0, total_segments - 1), "Full Recording")]
+    last_seg_id = f"S{max(0, total_segments - 1):04d}"
+    fallback = [
+        PresentationRange(
+            index=1,
+            start_segment_id="S0000",
+            end_segment_id=last_seg_id,
+            title="Full Recording",
+            boundary_confidence="high",
+            is_presentation=True,
+            block_type="presentation",
+            start_evidence=[BoundaryEvidence(segment_id="S0000", signal="fallback")],
+            decision_rationale="Fallback single presentation",
+        )
+    ]
 
     if not segments or not result or not result.presentations:
         logger.warning("Segmentation result empty or missing presentations. Falling back to single presentation.")
         return fallback
 
-    parsed_ranges: list[tuple[int, int, str, str]] = []
+    valid_ranges: list[PresentationRange] = []
 
     for item in result.presentations:
         s_idx = parse_segment_id(item.start_segment_id)
         e_idx = parse_segment_id(item.end_segment_id)
-        conf = item.boundary_confidence
 
         if s_idx is None or e_idx is None:
             logger.warning("Invalid segment ID format in result (%s, %s). Falling back.", item.start_segment_id, item.end_segment_id)
@@ -207,57 +273,100 @@ def validate_and_normalize_segmentation(
             return fallback
 
         title = item.title.strip() or f"Presentation {item.index}"
-        parsed_ranges.append((s_idx, e_idx, title, conf))
+        valid_ranges.append(
+            PresentationRange(
+                index=item.index,
+                start_segment_id=f"S{s_idx:04d}",
+                end_segment_id=f"S{e_idx:04d}",
+                title=title,
+                boundary_confidence=item.boundary_confidence,
+                is_presentation=item.is_presentation,
+                block_type=item.block_type,
+                start_evidence=item.start_evidence,
+                decision_rationale=item.decision_rationale,
+            )
+        )
 
     # Sort ranges by start_idx
-    parsed_ranges.sort(key=lambda x: x[0])
+    valid_ranges.sort(key=lambda x: x.start_idx)
 
-    # Rule: Low-confidence boundary alone must not cause a split.
-    # Merge low confidence splits into preceding range
-    merged_ranges: list[tuple[int, int, str]] = []
-    for s_idx, e_idx, title, conf in parsed_ranges:
+    # Rule: Low-confidence boundary alone without strong evidence signals must not cause a split.
+    strong_signals = {"moderator_intro", "speaker_change", "formal_opening", "previous_talk_close", "talk_transition"}
+    merged_ranges: list[PresentationRange] = []
+
+    for item in valid_ranges:
         if not merged_ranges:
-            merged_ranges.append((s_idx, e_idx, title))
+            merged_ranges.append(item)
             continue
 
-        prev_s, prev_e, prev_title = merged_ranges[-1]
-        if conf == "low":
-            # Low confidence split -> merge into previous presentation
-            logger.info("Low confidence boundary detected at segment %d. Merging into preceding presentation '%s'.", s_idx, prev_title)
-            merged_ranges[-1] = (prev_s, max(prev_e, e_idx), prev_title)
+        prev_item = merged_ranges[-1]
+        has_strong_evidence = any(e.signal in strong_signals for e in item.start_evidence)
+
+        if item.boundary_confidence == "low" and not has_strong_evidence:
+            logger.info("Low confidence boundary detected at segment %d without strong signals. Merging into preceding range '%s'.", item.start_idx, prev_item.title)
+            merged_ranges[-1] = PresentationRange(
+                index=prev_item.index,
+                start_segment_id=prev_item.start_segment_id,
+                end_segment_id=item.end_segment_id,
+                title=prev_item.title,
+                boundary_confidence=prev_item.boundary_confidence,
+                is_presentation=prev_item.is_presentation,
+                block_type=prev_item.block_type,
+                start_evidence=prev_item.start_evidence,
+                decision_rationale=prev_item.decision_rationale or item.decision_rationale,
+            )
         else:
-            merged_ranges.append((s_idx, e_idx, title))
+            merged_ranges.append(item)
 
     # Check contiguous coverage without gaps or overlaps
     curr_start = 0
-    final_ranges: list[tuple[int, int, str]] = []
+    final_ranges: list[PresentationRange] = []
 
-    for i, (s_idx, e_idx, title) in enumerate(merged_ranges):
+    for i, item in enumerate(merged_ranges):
+        s_idx = item.start_idx
+        e_idx = item.end_idx
+
         if i == 0 and s_idx != 0:
-            # Force start at 0
             s_idx = 0
 
         if s_idx != curr_start:
-            # Adjust gap or overlap deterministically to maintain continuity
-            if s_idx > curr_start:
-                # Gap -> adjust start_idx to cover gap
-                s_idx = curr_start
-            elif s_idx < curr_start:
-                # Overlap -> adjust start_idx to after previous end
-                s_idx = curr_start
+            s_idx = curr_start
 
         if s_idx > e_idx:
             continue
 
-        final_ranges.append((s_idx, e_idx, title))
+        final_ranges.append(
+            PresentationRange(
+                index=len(final_ranges) + 1,
+                start_segment_id=f"S{s_idx:04d}",
+                end_segment_id=f"S{e_idx:04d}",
+                title=item.title,
+                boundary_confidence=item.boundary_confidence,
+                is_presentation=item.is_presentation,
+                block_type=item.block_type,
+                start_evidence=item.start_evidence,
+                decision_rationale=item.decision_rationale,
+            )
+        )
         curr_start = e_idx + 1
 
     # Ensure last range extends to total_segments - 1
     if final_ranges:
-        last_s, last_e, last_title = final_ranges[-1]
-        if last_e < total_segments - 1:
-            final_ranges[-1] = (last_s, total_segments - 1, last_title)
+        last_item = final_ranges[-1]
+        if last_item.end_idx < total_segments - 1:
+            final_ranges[-1] = PresentationRange(
+                index=last_item.index,
+                start_segment_id=last_item.start_segment_id,
+                end_segment_id=f"S{total_segments - 1:04d}",
+                title=last_item.title,
+                boundary_confidence=last_item.boundary_confidence,
+                is_presentation=last_item.is_presentation,
+                block_type=last_item.block_type,
+                start_evidence=last_item.start_evidence,
+                decision_rationale=last_item.decision_rationale,
+            )
     else:
         return fallback
 
     return final_ranges
+

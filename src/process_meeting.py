@@ -20,8 +20,10 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from typing import Any, Callable
 
@@ -43,6 +45,7 @@ from generate_meeting_note import (
     transcript_for_prompt,
 )
 from presentation_segmentation import (
+    PresentationRange,
     SegmentationResult,
     segment_presentations_with_luna,
     validate_and_normalize_segmentation,
@@ -253,7 +256,7 @@ def process_meeting(
     if auto_segment is None:
         auto_segment = (note_type == "presentationSummary")
 
-    presentation_ranges: list[tuple[int, int, str]] = []
+    presentation_ranges: list[PresentationRange] = []
     raw_segmentation_result: SegmentationResult | None = None
 
     if auto_segment:
@@ -270,38 +273,96 @@ def process_meeting(
             presentation_ranges = validate_and_normalize_segmentation(segments, raw_segmentation_result)
         except Exception as e:
             LOGGER.warning("Luna presentation segmentation failed (%s). Falling back to 1 presentation.", e)
-            presentation_ranges = [(0, max(0, len(segments) - 1), "Full Recording")]
+            last_seg_id = f"S{max(0, len(segments) - 1):04d}"
+            presentation_ranges = [
+                PresentationRange(
+                    index=1,
+                    start_segment_id="S0000",
+                    end_segment_id=last_seg_id,
+                    title="Full Recording",
+                    boundary_confidence="high",
+                    is_presentation=True,
+                    block_type="presentation",
+                    decision_rationale="Fallback single presentation",
+                )
+            ]
 
-        # Save presentation_segments.json
+        # Save raw_luna_segmentation.json
+        raw_luna_path = out_dir / "raw_luna_segmentation.json"
+        if raw_segmentation_result is not None:
+            with open(raw_luna_path, "w", encoding="utf-8") as f:
+                json.dump(raw_segmentation_result.model_dump(), f, indent=2, ensure_ascii=False)
+
+        # Filter blocks where is_presentation is True for note generation
+        pres_blocks = [r for r in presentation_ranges if getattr(r, "is_presentation", True)]
+        if not pres_blocks:
+            pres_blocks = presentation_ranges
+
+        # Save presentation_segments.json with raw count, confidence, rationale, and block classification
         seg_json_path = out_dir / "presentation_segments.json"
         seg_export_data = {
-            "presentation_count": len(presentation_ranges),
+            "raw_candidate_count": len(raw_segmentation_result.presentations) if raw_segmentation_result else 0,
+            "presentation_count": len(pres_blocks),
+            "total_block_count": len(presentation_ranges),
+            "blocks": [
+                {
+                    "index": idx + 1,
+                    "title": getattr(r, "title", "Presentation"),
+                    "is_presentation": getattr(r, "is_presentation", True),
+                    "block_type": getattr(r, "block_type", "presentation"),
+                    "start_segment_id": getattr(r, "start_segment_id", "S0000"),
+                    "end_segment_id": getattr(r, "end_segment_id", "S0000"),
+                    "start_time_seconds": segments[r.start_idx]["start"] if hasattr(r, "start_idx") and r.start_idx < len(segments) else 0.0,
+                    "end_time_seconds": segments[r.end_idx]["end"] if hasattr(r, "end_idx") and r.end_idx < len(segments) else 0.0,
+                    "boundary_confidence": getattr(r, "boundary_confidence", "high"),
+                    "start_evidence": [e.model_dump() for e in getattr(r, "start_evidence", [])],
+                    "decision_rationale": getattr(r, "decision_rationale", ""),
+                }
+                for idx, r in enumerate(presentation_ranges)
+            ],
             "presentations": [
                 {
                     "index": idx + 1,
-                    "title": title,
-                    "start_segment_id": f"S{s_idx:04d}",
-                    "end_segment_id": f"S{e_idx:04d}",
-                    "start_time_seconds": segments[s_idx]["start"] if s_idx < len(segments) else 0.0,
-                    "end_time_seconds": segments[e_idx]["end"] if e_idx < len(segments) else 0.0,
+                    "title": getattr(r, "title", "Presentation"),
+                    "start_segment_id": getattr(r, "start_segment_id", "S0000"),
+                    "end_segment_id": getattr(r, "end_segment_id", "S0000"),
+                    "start_time_seconds": segments[r.start_idx]["start"] if hasattr(r, "start_idx") and r.start_idx < len(segments) else 0.0,
+                    "end_time_seconds": segments[r.end_idx]["end"] if hasattr(r, "end_idx") and r.end_idx < len(segments) else 0.0,
                 }
-                for idx, (s_idx, e_idx, title) in enumerate(presentation_ranges)
+                for idx, r in enumerate(pres_blocks)
             ],
         }
         with open(seg_json_path, "w", encoding="utf-8") as f:
             json.dump(seg_export_data, f, indent=2, ensure_ascii=False)
     else:
-        presentation_ranges = [(0, max(0, len(segments) - 1), "Full Recording")]
+        last_seg_id = f"S{max(0, len(segments) - 1):04d}"
+        presentation_ranges = [
+            PresentationRange(
+                index=1,
+                start_segment_id="S0000",
+                end_segment_id=last_seg_id,
+                title="Full Recording",
+                boundary_confidence="high",
+                is_presentation=True,
+                block_type="presentation",
+                decision_rationale="No auto-segmentation policy",
+            )
+        ]
+        pres_blocks = presentation_ranges
 
-    report_progress(70, f"Generating note(s) for {len(presentation_ranges)} presentation(s)...", progress_callback)
+    report_progress(70, f"Generating note(s) for {len(pres_blocks)} presentation(s)...", progress_callback)
     if cancel_checker and cancel_checker():
         raise RuntimeError("Cancelled before note generation.")
 
     generated_notes: list[dict[str, Any]] = []
 
-    for idx, (start_idx, end_idx, title) in enumerate(presentation_ranges):
+    for idx, item in enumerate(pres_blocks):
         p_index = idx + 1
-        LOGGER.info("Processing presentation %d/%d [%d..%d]: %s", p_index, len(presentation_ranges), start_idx, end_idx, title)
+        start_idx = item.start_idx if hasattr(item, "start_idx") else item[0]
+        end_idx = item.end_idx if hasattr(item, "end_idx") else item[1]
+        title = item.title if hasattr(item, "title") else item[2]
+
+        LOGGER.info("Processing presentation %d/%d [%d..%d]: %s", p_index, len(pres_blocks), start_idx, end_idx, title)
 
         sliced_api_segments = [
             {
@@ -525,20 +586,86 @@ def process_meeting(
         "has_context": bool(context and context.strip()),
         "has_vocabulary": bool(vocabulary and vocabulary.strip()),
         "auto_segmentation_used": auto_segment,
-        "presentation_count": len(presentation_ranges),
+        "presentation_count": len(pres_blocks),
+        "total_block_count": len(presentation_ranges),
         "detected_presentations": [
             {
                 "index": i + 1,
-                "title": t,
-                "segment_range": [s, e],
+                "title": r.title if hasattr(r, "title") else r[2],
+                "segment_range": [r.start_idx if hasattr(r, "start_idx") else r[0], r.end_idx if hasattr(r, "end_idx") else r[1]],
             }
-            for i, (s, e, t) in enumerate(presentation_ranges)
+            for i, r in enumerate(pres_blocks)
         ],
         "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
 
     with open(provenance_path, "w", encoding="utf-8") as f:
         json.dump(provenance_data, f, indent=2)
+
+    # Build per-presentation subfolders and audit folder
+    audit_dir = out_dir / "audit"
+    audit_dir.mkdir(exist_ok=True)
+
+    audit_files = [
+        provenance_path,
+        transcript_json_path,
+        transcript_txt_path,
+        out_dir / "presentation_segments.json",
+        out_dir / "raw_luna_segmentation.json",
+        out_dir / "summary_report.json",
+        docx_path,
+        pdf_path,
+        md_path,
+    ]
+    for af in audit_files:
+        if af.is_file():
+            shutil.copy2(af, audit_dir / af.name)
+
+    # Copy per-presentation artifacts to per-presentation folders
+    for item in generated_notes:
+        p_idx = item["index"]
+        p_title = item["title"]
+        slug = slugify_title(p_title)
+        p_folder_name = f"{p_idx:02d}_{slug}"
+        p_folder = out_dir / p_folder_name
+        p_folder.mkdir(exist_ok=True)
+
+        if len(generated_notes) == 1:
+            for ext in [".docx", ".pdf", ".txt", ".md"]:
+                src_f = out_dir / f"note{ext}"
+                if src_f.is_file():
+                    shutil.copy2(src_f, p_folder / f"note{ext}")
+        else:
+            p_prefix = f"presentation_{p_idx:02d}_{slug}"
+            for ext in [".docx", ".pdf", ".txt", ".md"]:
+                src_f = out_dir / f"{p_prefix}{ext}"
+                if src_f.is_file():
+                    shutil.copy2(src_f, p_folder / f"note{ext}")
+
+    # Package everything into meeting_notes.zip
+    zip_path = out_dir / "meeting_notes.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        if md_path.is_file():
+            zf.write(md_path, arcname="meeting_notes.md")
+        if docx_path.is_file():
+            zf.write(docx_path, arcname="meeting_notes.docx")
+        if pdf_path.is_file():
+            zf.write(pdf_path, arcname="meeting_notes.pdf")
+
+        for item in generated_notes:
+            p_idx = item["index"]
+            p_title = item["title"]
+            slug = slugify_title(p_title)
+            p_folder_name = f"{p_idx:02d}_{slug}"
+            p_folder = out_dir / p_folder_name
+            if p_folder.is_dir():
+                for pf in p_folder.iterdir():
+                    if pf.is_file():
+                        zf.write(pf, arcname=f"{p_folder_name}/{pf.name}")
+
+        for af in audit_dir.iterdir():
+            if af.is_file():
+                zf.write(af, arcname=f"audit/{af.name}")
 
     report_progress(100, "Meeting note processing completed.", progress_callback)
 
@@ -550,9 +677,12 @@ def process_meeting(
         "transcript_json": transcript_json_path,
         "transcript_txt": transcript_txt_path,
         "provenance": provenance_path,
+        "zip": zip_path,
     }
     if auto_segment and (out_dir / "presentation_segments.json").is_file():
         res_dict["presentation_segments"] = out_dir / "presentation_segments.json"
+    if (out_dir / "raw_luna_segmentation.json").is_file():
+        res_dict["raw_luna_segmentation"] = out_dir / "raw_luna_segmentation.json"
     return res_dict
 
 
