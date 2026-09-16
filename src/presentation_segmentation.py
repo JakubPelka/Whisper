@@ -42,20 +42,25 @@ class PresentationRange(BaseModel):
     def _normalize_confidence(cls, v: Any) -> str:
         if isinstance(v, str):
             s = v.strip().lower()
-            if "high" in s:
-                return "high"
-            if "med" in s:
-                return "medium"
-            if "low" in s:
-                return "low"
-        return "high"
+            if s in ("high", "medium", "low"):
+                return s
+        raise ValueError(f"Invalid boundary_confidence: '{v}'. Must be 'high', 'medium', or 'low'.")
 
     @field_validator("is_presentation", mode="before")
     @classmethod
     def _normalize_is_presentation(cls, v: Any) -> bool:
+        if isinstance(v, bool):
+            return v
         if isinstance(v, str):
-            return v.strip().lower() in ("true", "1", "yes", "y")
-        return bool(v)
+            s = v.strip().lower()
+            if s in ("true", "1", "yes", "y"):
+                return True
+            if s in ("false", "0", "no", "n"):
+                return False
+            raise ValueError(f"Invalid is_presentation string: '{v}'. Must be boolean or recognized boolean string.")
+        if isinstance(v, (int, float)):
+            return bool(v)
+        raise ValueError(f"Invalid is_presentation value: {v}")
 
     @field_validator("block_type", mode="before")
     @classmethod
@@ -64,7 +69,7 @@ class PresentationRange(BaseModel):
             s = v.strip().lower()
             if s in ("presentation", "intro", "outro", "break", "housekeeping", "other"):
                 return s
-        return "presentation"
+        raise ValueError(f"Invalid block_type: '{v}'. Must be one of ('presentation', 'intro', 'outro', 'break', 'housekeeping', 'other').")
 
     @property
     def start_idx(self) -> int:
@@ -386,6 +391,31 @@ def validate_and_normalize_segmentation(
     # Sort ranges by start_idx
     valid_ranges.sort(key=lambda x: x.start_idx)
 
+    if strict:
+        if not valid_ranges:
+            raise SegmentationError("No valid presentation ranges found.", stage="normalization", exception_type="ValueError")
+        if valid_ranges[0].start_idx != 0:
+            raise SegmentationError(
+                f"First block starts at segment S{valid_ranges[0].start_idx:04d}, expected S0000.",
+                stage="normalization",
+                exception_type="ValueError",
+            )
+        expected_next = 0
+        for r in valid_ranges:
+            if r.start_idx != expected_next:
+                raise SegmentationError(
+                    f"Coverage gap or overlap: block '{r.title}' starts at S{r.start_idx:04d}, expected S{expected_next:04d}.",
+                    stage="normalization",
+                    exception_type="ValueError",
+                )
+            expected_next = r.end_idx + 1
+        if expected_next != total_segments:
+            raise SegmentationError(
+                f"Incomplete tail coverage: blocks cover up to segment S{expected_next - 1:04d}, but transcript has {total_segments} segments.",
+                stage="normalization",
+                exception_type="ValueError",
+            )
+
     # Rule: Low-confidence boundary alone without strong evidence signals must not cause a split.
     strong_signals = {"moderator_intro", "speaker_change", "formal_opening", "previous_talk_close", "talk_transition"}
     merged_ranges: list[PresentationRange] = []
@@ -463,6 +493,8 @@ def validate_and_normalize_segmentation(
             )
     else:
         return fallback
+
+    return final_ranges
 
     return final_ranges
 

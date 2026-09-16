@@ -305,6 +305,108 @@ def test_segmentation_error_stages_on_invalid_responses():
         assert exc_info.value.raw_response == json.dumps({"wrong_key": "data"})
 
 
+def test_schema_validation_fails_on_invalid_enum_and_types():
+    from presentation_segmentation import SegmentationError
+
+    segments = make_dummy_segments(5)
+
+    invalid_confidence = {
+        "version": 1,
+        "presentation_count": 1,
+        "presentations": [
+            {
+                "index": 1,
+                "start_segment_id": "S0000",
+                "end_segment_id": "S0004",
+                "title": "Talk",
+                "boundary_confidence": "super_high",
+                "is_presentation": True,
+                "block_type": "presentation",
+            }
+        ],
+    }
+
+    with patch("openai.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
+        mock_client.chat.completions.create.return_value.choices = [
+            type("Choice", (), {"message": type("Msg", (), {"content": json.dumps(invalid_confidence)})()})()
+        ]
+        with pytest.raises(SegmentationError) as exc_info:
+            segment_presentations_with_luna(segments, api_key="sk-test-mock")
+        assert exc_info.value.stage == "schema_validation"
+
+    invalid_block_type = {
+        "version": 1,
+        "presentation_count": 1,
+        "presentations": [
+            {
+                "index": 1,
+                "start_segment_id": "S0000",
+                "end_segment_id": "S0004",
+                "title": "Talk",
+                "boundary_confidence": "high",
+                "is_presentation": True,
+                "block_type": "keynote_speech",
+            }
+        ],
+    }
+
+    with patch("openai.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
+        mock_client.chat.completions.create.return_value.choices = [
+            type("Choice", (), {"message": type("Msg", (), {"content": json.dumps(invalid_block_type)})()})()
+        ]
+        with pytest.raises(SegmentationError) as exc_info:
+            segment_presentations_with_luna(segments, api_key="sk-test-mock")
+        assert exc_info.value.stage == "schema_validation"
+
+
+def test_strict_coverage_validation_raises_normalization_error():
+    from presentation_segmentation import PresentationRange, SegmentationError, SegmentationResult, validate_and_normalize_segmentation
+
+    segments = make_dummy_segments(10)
+
+    # 1. Non-zero first start
+    res1 = SegmentationResult(
+        version=1,
+        presentation_count=1,
+        presentations=[
+            PresentationRange(index=1, start_segment_id="S0002", end_segment_id="S0009", title="Talk", boundary_confidence="high")
+        ],
+    )
+    with pytest.raises(SegmentationError) as exc_info:
+        validate_and_normalize_segmentation(segments, res1, strict=True)
+    assert exc_info.value.stage == "normalization"
+    assert "S0000" in str(exc_info.value)
+
+    # 2. Coverage gap
+    res2 = SegmentationResult(
+        version=1,
+        presentation_count=2,
+        presentations=[
+            PresentationRange(index=1, start_segment_id="S0000", end_segment_id="S0003", title="Talk 1", boundary_confidence="high"),
+            PresentationRange(index=2, start_segment_id="S0005", end_segment_id="S0009", title="Talk 2", boundary_confidence="high"),
+        ],
+    )
+    with pytest.raises(SegmentationError) as exc_info:
+        validate_and_normalize_segmentation(segments, res2, strict=True)
+    assert exc_info.value.stage == "normalization"
+    assert "gap or overlap" in str(exc_info.value)
+
+    # 3. Incomplete tail coverage
+    res3 = SegmentationResult(
+        version=1,
+        presentation_count=1,
+        presentations=[
+            PresentationRange(index=1, start_segment_id="S0000", end_segment_id="S0005", title="Talk 1", boundary_confidence="high")
+        ],
+    )
+    with pytest.raises(SegmentationError) as exc_info:
+        validate_and_normalize_segmentation(segments, res3, strict=True)
+    assert exc_info.value.stage == "normalization"
+    assert "Incomplete tail coverage" in str(exc_info.value)
+
+
 
 def test_conference_housekeeping_and_multi_keynote_segmentation():
     segments = make_dummy_segments(30)

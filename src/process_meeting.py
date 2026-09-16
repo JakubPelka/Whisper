@@ -290,8 +290,9 @@ def process_meeting(
                 model_n = getattr(e, "model_name", "gpt-5.6-luna")
 
                 if raw_resp:
-                    raw_resp_path = audit_dir / "raw_luna_segmentation_response.txt"
-                    raw_resp_path.write_text(raw_resp, encoding="utf-8")
+                    (audit_dir / "raw_luna_segmentation_response.txt").write_text(raw_resp, encoding="utf-8")
+                    if out_dir and Path(out_dir) != staging_dir:
+                        (Path(out_dir) / "raw_luna_segmentation_response.txt").write_text(raw_resp, encoding="utf-8")
 
                 err_data = {
                     "segmentation_status": "failed",
@@ -305,6 +306,11 @@ def process_meeting(
                 err_json_path = audit_dir / "segmentation_error.json"
                 with open(err_json_path, "w", encoding="utf-8") as f:
                     json.dump(err_data, f, indent=2, ensure_ascii=False)
+
+                if out_dir and Path(out_dir) != staging_dir:
+                    out_err_path = Path(out_dir) / "segmentation_error.json"
+                    with open(out_err_path, "w", encoding="utf-8") as f:
+                        json.dump(err_data, f, indent=2, ensure_ascii=False)
 
                 concise_msg = f"Segmentation failed at stage '{stage}': {exc_type}: {e}"
                 LOGGER.error("%s. Aborting presentationSummary processing.", concise_msg)

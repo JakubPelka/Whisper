@@ -180,6 +180,13 @@ def test_process_meeting_presentation_summary_segmentation_failure_aborts_withou
         # Verify no note creation API calls were made!
         mock_create_note.assert_not_called()
 
+        # Verify failure diagnostic files survive in durable out_dir!
+        assert (out_dir / "segmentation_error.json").is_file()
+        assert (out_dir / "raw_luna_segmentation_response.txt").is_file()
+        err_content = json.loads((out_dir / "segmentation_error.json").read_text(encoding="utf-8"))
+        assert err_content["segmentation_status"] == "failed"
+        assert err_content["stage"] == "json_decode"
+
 
 def test_process_meeting_single_presentation_success_flow(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy-key")
