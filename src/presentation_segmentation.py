@@ -59,7 +59,11 @@ class PresentationRange(BaseModel):
                 return False
             raise ValueError(f"Invalid is_presentation string: '{v}'. Must be boolean or recognized boolean string.")
         if isinstance(v, (int, float)):
-            return bool(v)
+            if v == 1 or v == 1.0:
+                return True
+            if v == 0 or v == 0.0:
+                return False
+            raise ValueError(f"Invalid numeric is_presentation: {v}. Must be 0 or 1.")
         raise ValueError(f"Invalid is_presentation value: {v}")
 
     @field_validator("block_type", mode="before")
@@ -493,8 +497,6 @@ def validate_and_normalize_segmentation(
             )
     else:
         return fallback
-
-    return final_ranges
 
     return final_ranges
 

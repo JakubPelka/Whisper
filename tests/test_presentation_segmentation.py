@@ -360,6 +360,31 @@ def test_schema_validation_fails_on_invalid_enum_and_types():
             segment_presentations_with_luna(segments, api_key="sk-test-mock")
         assert exc_info.value.stage == "schema_validation"
 
+    invalid_is_presentation_numeric = {
+        "version": 1,
+        "presentation_count": 1,
+        "presentations": [
+            {
+                "index": 1,
+                "start_segment_id": "S0000",
+                "end_segment_id": "S0004",
+                "title": "Talk",
+                "boundary_confidence": "high",
+                "is_presentation": 42,
+                "block_type": "presentation",
+            }
+        ],
+    }
+
+    with patch("openai.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
+        mock_client.chat.completions.create.return_value.choices = [
+            type("Choice", (), {"message": type("Msg", (), {"content": json.dumps(invalid_is_presentation_numeric)})()})()
+        ]
+        with pytest.raises(SegmentationError) as exc_info:
+            segment_presentations_with_luna(segments, api_key="sk-test-mock")
+        assert exc_info.value.stage == "schema_validation"
+
 
 def test_strict_coverage_validation_raises_normalization_error():
     from presentation_segmentation import PresentationRange, SegmentationError, SegmentationResult, validate_and_normalize_segmentation
