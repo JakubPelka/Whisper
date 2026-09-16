@@ -190,12 +190,33 @@ DO NOT generate meeting notes or summaries. Return ONLY the JSON object.
 """
 
 
+class SegmentationError(RuntimeError):
+    """Raised when Luna presentation segmentation fails at any stage."""
+
+    def __init__(
+        self,
+        message: str,
+        stage: str = "unknown",
+        exception_type: str = "SegmentationError",
+        raw_response: str | None = None,
+        model_name: str = "gpt-5.6-luna",
+    ):
+        super().__init__(message)
+        self.stage = stage
+        self.exception_type = exception_type
+        self.raw_response = raw_response
+        self.model_name = model_name
+
+
 def segment_presentations_with_luna(
     segments: list[dict[str, Any]],
     api_key: str | None = None,
     model_name: str = "gpt-5.6-luna",
-) -> SegmentationResult:
-    """Invoke OpenAI API to detect logical presentation boundaries."""
+) -> tuple[SegmentationResult, str]:
+    """Invoke OpenAI API to detect logical presentation boundaries.
+
+    Returns tuple of (SegmentationResult, raw_response_text).
+    """
     key = api_key or os.environ.get("OPENAI_API_KEY")
     if not key:
         env_file = Path(__file__).resolve().parent.parent / "secrets" / "openai.env"
@@ -209,7 +230,7 @@ def segment_presentations_with_luna(
                 pass
 
     if not key:
-        raise RuntimeError("OPENAI_API_KEY is required for Luna presentation segmentation.")
+        raise SegmentationError("OPENAI_API_KEY is required for Luna presentation segmentation.", stage="api", exception_type="KeyError")
 
     from openai import OpenAI
 
@@ -218,7 +239,7 @@ def segment_presentations_with_luna(
         if ("PYTEST_CURRENT_TEST" in os.environ or os.environ.get("APP_ENV") == "testing") and os.environ.get("ALLOW_REAL_AI_API") != "1":
             total_segs = len(segments)
             end_seg_id = f"S{total_segs - 1:04d}" if total_segs > 0 else "S0000"
-            return SegmentationResult(
+            res = SegmentationResult(
                 version=1,
                 presentation_count=1,
                 presentations=[
@@ -235,6 +256,8 @@ def segment_presentations_with_luna(
                     )
                 ],
             )
+            raw_stub = json.dumps(res.model_dump())
+            return res, raw_stub
 
     prompt_transcript = prepare_prompt_transcript(segments)
 
@@ -243,6 +266,7 @@ def segment_presentations_with_luna(
         {"role": "user", "content": f"Analyze the following transcript and return presentation boundaries:\n\n{prompt_transcript}"},
     ]
 
+    raw_content: str | None = None
     try:
         response = client.chat.completions.create(
             model=model_name,
@@ -250,18 +274,47 @@ def segment_presentations_with_luna(
             response_format={"type": "json_object"},
             temperature=0.1,
         )
-
-        content = response.choices[0].message.content or "{}"
-        data = json.loads(content)
-        return SegmentationResult.model_validate(data)
+        raw_content = response.choices[0].message.content or "{}"
     except Exception as e:
-        logger.exception("Luna presentation segmentation API/parsing failed: %s", e)
-        raise
+        logger.exception("Luna presentation segmentation API call failed: %s", e)
+        raise SegmentationError(
+            message=f"API call failed: {e}",
+            stage="api",
+            exception_type=type(e).__name__,
+            raw_response=None,
+            model_name=model_name,
+        ) from e
+
+    try:
+        data = json.loads(raw_content)
+    except Exception as e:
+        logger.exception("Luna presentation segmentation JSON decode failed: %s", e)
+        raise SegmentationError(
+            message=f"JSON decode failed: {e}",
+            stage="json_decode",
+            exception_type=type(e).__name__,
+            raw_response=raw_content,
+            model_name=model_name,
+        ) from e
+
+    try:
+        parsed = SegmentationResult.model_validate(data)
+        return parsed, raw_content
+    except Exception as e:
+        logger.exception("Luna presentation segmentation schema validation failed: %s", e)
+        raise SegmentationError(
+            message=f"Schema validation failed: {e}",
+            stage="schema_validation",
+            exception_type=type(e).__name__,
+            raw_response=raw_content,
+            model_name=model_name,
+        ) from e
 
 
 def validate_and_normalize_segmentation(
     segments: list[dict[str, Any]],
     result: SegmentationResult | None,
+    strict: bool = False,
 ) -> list[PresentationRange]:
     """Validate segmentation result for structural correctness and full coverage.
 
@@ -269,7 +322,7 @@ def validate_and_normalize_segmentation(
     1. Returns non-empty list of PresentationRange objects.
     2. Chronologically ordered, contiguous, non-overlapping.
     3. Covers all segments from 0 to len(segments) - 1.
-    4. If any rule is violated, falls back to single presentation.
+    4. If strict=True and any rule is violated, raises SegmentationError(stage='normalization').
     """
     total_segments = len(segments)
     last_seg_id = f"S{max(0, total_segments - 1):04d}"
@@ -288,7 +341,10 @@ def validate_and_normalize_segmentation(
     ]
 
     if not segments or not result or not result.presentations:
-        logger.warning("Segmentation result empty or missing presentations. Falling back to single presentation.")
+        msg = "Segmentation result empty or missing presentations."
+        logger.warning("%s", msg)
+        if strict:
+            raise SegmentationError(msg, stage="normalization", exception_type="ValueError")
         return fallback
 
     valid_ranges: list[PresentationRange] = []
@@ -298,12 +354,19 @@ def validate_and_normalize_segmentation(
         e_idx = parse_segment_id(item.end_segment_id)
 
         if s_idx is None or e_idx is None:
-            logger.warning("Invalid segment ID format in result (%s, %s). Falling back.", item.start_segment_id, item.end_segment_id)
+            msg = f"Invalid segment ID format in result ({item.start_segment_id}, {item.end_segment_id})."
+            logger.warning("%s", msg)
+            if strict:
+                raise SegmentationError(msg, stage="normalization", exception_type="ValueError")
             return fallback
 
         if s_idx < 0 or e_idx >= total_segments or s_idx > e_idx:
-            logger.warning("Out of bounds segment range [%d, %d] for total %d. Falling back.", s_idx, e_idx, total_segments)
+            msg = f"Out of bounds segment range [{s_idx}, {e_idx}] for total {total_segments}."
+            logger.warning("%s", msg)
+            if strict:
+                raise SegmentationError(msg, stage="normalization", exception_type="ValueError")
             return fallback
+
 
         title = item.title.strip() or f"Presentation {item.index}"
         valid_ranges.append(

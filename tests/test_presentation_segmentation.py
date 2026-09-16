@@ -250,9 +250,10 @@ def test_segment_presentations_with_luna_mocked():
             type("Choice", (), {"message": type("Msg", (), {"content": mock_json_response})()})()
         ]
 
-        res = segment_presentations_with_luna(segments, api_key="sk-test-mock")
+        res, raw_str = segment_presentations_with_luna(segments, api_key="sk-test-mock")
         assert res.presentation_count == 1
         assert res.presentations[0].title == "Mocked Presentation"
+        assert raw_str == mock_json_response
 
 
 def test_segment_presentations_with_luna_test_guard_no_api_calls(monkeypatch):
@@ -261,7 +262,7 @@ def test_segment_presentations_with_luna_test_guard_no_api_calls(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-plausible-test-key-12345")
     monkeypatch.delenv("ALLOW_REAL_AI_API", raising=False)
 
-    res = segment_presentations_with_luna(segments)
+    res, raw_str = segment_presentations_with_luna(segments)
     assert isinstance(res, SegmentationResult)
     assert res.presentation_count == 1
     assert len(res.presentations) == 1
@@ -269,6 +270,40 @@ def test_segment_presentations_with_luna_test_guard_no_api_calls(monkeypatch):
     assert res.presentations[0].end_segment_id == "S0004"
     assert res.presentations[0].title == "Full Recording"
     assert res.presentations[0].is_presentation is True
+    assert raw_str is not None
+
+
+def test_segmentation_error_stages_on_invalid_responses():
+    from presentation_segmentation import SegmentationError
+
+    segments = make_dummy_segments(5)
+
+    # 1. JSON Decode Error
+    with patch("openai.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
+        mock_response = mock_client.chat.completions.create.return_value
+        mock_response.choices = [
+            type("Choice", (), {"message": type("Msg", (), {"content": "NOT VALID JSON {{{ "})()})()
+        ]
+
+        with pytest.raises(SegmentationError) as exc_info:
+            segment_presentations_with_luna(segments, api_key="sk-test-mock")
+        assert exc_info.value.stage == "json_decode"
+        assert exc_info.value.raw_response == "NOT VALID JSON {{{ "
+
+    # 2. Schema Validation Error
+    with patch("openai.OpenAI") as mock_openai:
+        mock_client = mock_openai.return_value
+        mock_response = mock_client.chat.completions.create.return_value
+        mock_response.choices = [
+            type("Choice", (), {"message": type("Msg", (), {"content": json.dumps({"wrong_key": "data"})})()})()
+        ]
+
+        with pytest.raises(SegmentationError) as exc_info:
+            segment_presentations_with_luna(segments, api_key="sk-test-mock")
+        assert exc_info.value.stage == "schema_validation"
+        assert exc_info.value.raw_response == json.dumps({"wrong_key": "data"})
+
 
 
 def test_conference_housekeeping_and_multi_keynote_segmentation():

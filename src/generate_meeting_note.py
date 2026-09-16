@@ -149,7 +149,8 @@ def transcript_for_prompt(segments: Iterable[dict[str, Any]]) -> str:
     for segment in segments:
         start = format_timestamp(segment.get("start"))
         end = format_timestamp(segment.get("end"))
-        lines.append(f"[S{segment['id']:04d} {start}-{end}] {segment['text']}")
+        seg_id = segment.get("id", segment.get("segment_id", 0))
+        lines.append(f"[S{seg_id:04d} {start}-{end}] {segment.get('text', '')}")
     return "\n".join(lines)
 
 

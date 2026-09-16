@@ -38,6 +38,7 @@ from generate_meeting_note import (
     GroundedStatement,
     MeetingNote,
     ThematicSection,
+    VerificationResult,
     create_note_with_api,
     ensure_api_key,
     render_docx,
@@ -45,6 +46,7 @@ from generate_meeting_note import (
     render_pdf,
     transcript_for_prompt,
 )
+
 from presentation_segmentation import (
     PresentationRange,
     SegmentationResult,
@@ -272,28 +274,42 @@ def process_meeting(
             if cancel_checker and cancel_checker():
                 raise RuntimeError("Cancelled before presentation segmentation.")
 
+            raw_segmentation_result = None
+            raw_response_str = None
             try:
                 # Measure transcript length
                 total_chars = sum(len(s.get("text", "")) for s in segments)
                 LOGGER.info("Total transcript length: %d chars in %d segments", total_chars, len(segments))
 
-                raw_segmentation_result = segment_presentations_with_luna(segments)
-                presentation_ranges = validate_and_normalize_segmentation(segments, raw_segmentation_result)
+                raw_segmentation_result, raw_response_str = segment_presentations_with_luna(segments)
+                presentation_ranges = validate_and_normalize_segmentation(segments, raw_segmentation_result, strict=True)
             except Exception as e:
-                LOGGER.warning("Luna presentation segmentation failed (%s). Falling back to 1 presentation.", e)
-                last_seg_id = f"S{max(0, len(segments) - 1):04d}"
-                presentation_ranges = [
-                    PresentationRange(
-                        index=1,
-                        start_segment_id="S0000",
-                        end_segment_id=last_seg_id,
-                        title="Full Recording",
-                        boundary_confidence="high",
-                        is_presentation=True,
-                        block_type="presentation",
-                        decision_rationale="Fallback single presentation",
-                    )
-                ]
+                stage = getattr(e, "stage", "unknown")
+                exc_type = getattr(e, "exception_type", type(e).__name__)
+                raw_resp = getattr(e, "raw_response", raw_response_str)
+                model_n = getattr(e, "model_name", "gpt-5.6-luna")
+
+                if raw_resp:
+                    raw_resp_path = audit_dir / "raw_luna_segmentation_response.txt"
+                    raw_resp_path.write_text(raw_resp, encoding="utf-8")
+
+                err_data = {
+                    "segmentation_status": "failed",
+                    "stage": stage,
+                    "exception_type": exc_type,
+                    "exception_message": str(e),
+                    "model_name": model_n,
+                    "raw_response_received": bool(raw_resp),
+                    "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+                err_json_path = audit_dir / "segmentation_error.json"
+                with open(err_json_path, "w", encoding="utf-8") as f:
+                    json.dump(err_data, f, indent=2, ensure_ascii=False)
+
+                concise_msg = f"Segmentation failed at stage '{stage}': {exc_type}: {e}"
+                LOGGER.error("%s. Aborting presentationSummary processing.", concise_msg)
+                report_progress(0, concise_msg, progress_callback)
+                raise RuntimeError(concise_msg) from e
 
             # Save raw_luna_segmentation.json to audit/
             raw_luna_path = audit_dir / "raw_luna_segmentation.json"
@@ -309,6 +325,7 @@ def process_meeting(
             # Save presentation_segments.json to audit/
             seg_json_path = audit_dir / "presentation_segments.json"
             seg_export_data = {
+                "segmentation_status": "success",
                 "raw_candidate_count": len(raw_segmentation_result.presentations) if raw_segmentation_result else 0,
                 "presentation_count": len(pres_blocks),
                 "total_block_count": len(presentation_ranges),
@@ -358,98 +375,121 @@ def process_meeting(
             ]
             pres_blocks = presentation_ranges
 
+        # 8. Generate meeting note(s) for each presentation block
         report_progress(70, f"Generating note(s) for {len(pres_blocks)} presentation(s)...", progress_callback)
         if cancel_checker and cancel_checker():
             raise RuntimeError("Cancelled before note generation.")
 
         generated_notes: list[dict[str, Any]] = []
 
-        for idx, item in enumerate(pres_blocks):
-            p_index = idx + 1
-            start_idx = item.start_idx if hasattr(item, "start_idx") else item[0]
-            end_idx = item.end_idx if hasattr(item, "end_idx") else item[1]
-            title = item.title if hasattr(item, "title") else item[2]
+        for p_idx, r in enumerate(pres_blocks, start=1):
+            s_idx = r.start_idx
+            e_idx = r.end_idx
+            slice_segs = segments[s_idx : e_idx + 1]
+            p_title = getattr(r, "title", f"Presentation {p_idx}")
 
-            LOGGER.info("Processing presentation %d/%d [%d..%d]: %s", p_index, len(pres_blocks), start_idx, end_idx, title)
+            if not slice_segs:
+                continue
 
-            sliced_api_segments = [
-                {
-                    "id": i,
-                    "start": float(segments[i]["start"]),
-                    "end": float(segments[i]["end"]),
-                    "text": str(segments[i]["text"]),
-                }
-                for i in range(start_idx, end_idx + 1)
-            ]
-
-            sliced_transcript = transcript_for_prompt(sliced_api_segments)
-            if title and title != "Full Recording":
-                p_context = f"{context}\nPresentation Title: {title}" if context else f"Presentation Title: {title}"
-            else:
-                p_context = context
-
+            slice_text = transcript_for_prompt(slice_segs)
             res = create_note_with_api(
-                transcript_text=sliced_transcript,
+                transcript_text=slice_text,
                 language=note_language,
-                meeting_context=p_context,
                 note_preset="presentationSummary" if auto_segment else note_type,
+                meeting_context=context,
             )
-
-            if isinstance(res, tuple):
-                note_obj = res[1].final_note
+            if isinstance(res, tuple) and len(res) >= 2:
+                verification_res = res[1]
             elif hasattr(res, "final_note"):
-                note_obj = res.final_note
+                verification_res = res
             else:
-                note_obj = res
+                verification_res = VerificationResult(final_note=res, removed_or_corrected_claims=[], verification_warnings=[])
 
-            sanitized_note = sanitize_grounding(note_obj, start_idx, end_idx)
-            start_t = segments[start_idx]["start"] if start_idx < len(segments) else 0.0
-            end_t = segments[end_idx]["end"] if end_idx < len(segments) else 0.0
-
-            generated_notes.append(
-                {
-                    "index": p_index,
-                    "title": title,
-                    "start_idx": start_idx,
-                    "end_idx": end_idx,
-                    "start_time": start_t,
-                    "end_time": end_t,
-                    "note": sanitized_note,
-                }
+            sanitized_note = sanitize_grounding(verification_res.final_note, s_idx, e_idx)
+            sanitized_res = VerificationResult(
+                final_note=sanitized_note,
+                removed_or_corrected_claims=verification_res.removed_or_corrected_claims,
+                verification_warnings=verification_res.verification_warnings,
             )
+
+            generated_notes.append({
+                "index": p_idx,
+                "title": p_title,
+                "range": r,
+                "note": sanitized_res,
+                "slice_segments": slice_segs,
+            })
+
+        # 9. Rendering output documents
+        docx_path = out_dir / "note.docx"
+        pdf_path = out_dir / "note.pdf"
+        md_path = out_dir / "note.md"
+        txt_path = out_dir / "note.txt"
 
         report_progress(85, "Rendering output documents (DOCX, PDF, TXT, MD)...", progress_callback)
+        if cancel_checker and cancel_checker():
+            raise RuntimeError("Cancelled before document rendering.")
 
-        # Render per-presentation notes in per-presentation staging folders (01_<title>/note.docx etc)
+        def _get_meeting_note(n_obj: Any) -> MeetingNote:
+            if hasattr(n_obj, "final_note"):
+                return n_obj.final_note
+            return n_obj
+
+        if len(generated_notes) == 1:
+            item = generated_notes[0]
+            single_mn = _get_meeting_note(item["note"])
+            render_docx(note=single_mn, output_path=docx_path, source_name=input_path.name, language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
+            render_pdf(note=single_mn, output_path=pdf_path, source_name=input_path.name, language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
+            md_text = render_note_markdown(single_mn, language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
+            md_path.write_text(md_text, encoding="utf-8")
+            txt_path.write_text(md_text, encoding="utf-8")
+        else:
+            combined_sections: list[ThematicSection] = []
+            for item in generated_notes:
+                mn = _get_meeting_note(item["note"])
+                header_title = f"Presentation {item['index']}: {item['title']}"
+                combined_sections.append(
+                    ThematicSection(
+                        heading=header_title,
+                        bullet_points=mn.summary or [GroundedStatement(text=header_title, source_segments=[0])],
+                    )
+                )
+                for sec in getattr(mn, "thematic_sections", []):
+                    combined_sections.append(sec)
+
+
+            combined_note = MeetingNote(
+                title=GroundedStatement(text=f"Presentation Summary Index: {input_path.name}", source_segments=[0]),
+                summary=[GroundedStatement(text=f"Contains {len(generated_notes)} presentations.", source_segments=[0])],
+                thematic_sections=combined_sections,
+            )
+            render_docx(note=combined_note, output_path=docx_path, source_name=input_path.name, language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
+            render_pdf(note=combined_note, output_path=pdf_path, source_name=input_path.name, language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
+            combined_md = render_note_markdown(combined_note, language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
+            md_path.write_text(combined_md, encoding="utf-8")
+            txt_path.write_text(combined_md, encoding="utf-8")
+
+        # Copy per-presentation artifacts into staging subfolders
         for item in generated_notes:
             p_idx = item["index"]
             p_title = item["title"]
             slug = slugify_title(p_title)
-            p_folder = staging_dir / f"{p_idx:02d}_{slug}"
+            p_folder_name = f"{p_idx:02d}_{slug}"
+            p_folder = staging_dir / p_folder_name
             p_folder.mkdir(parents=True, exist_ok=True)
 
             p_docx = p_folder / "note.docx"
             p_pdf = p_folder / "note.pdf"
-            p_txt = p_folder / "note.txt"
             p_md = p_folder / "note.md"
+            p_txt = p_folder / "note.txt"
 
-            render_docx(
-                note=item["note"],
-                output_path=p_docx,
-                source_name=f"{input_path.name} [{p_title}]",
-                language=note_language,
-                note_preset="presentationSummary" if auto_segment else note_type,
-            )
-            render_pdf(
-                note=item["note"],
-                output_path=p_pdf,
-                source_name=f"{input_path.name} [{p_title}]",
-                language=note_language,
-                note_preset="presentationSummary" if auto_segment else note_type,
-            )
-            p_md_text = render_note_markdown(item["note"], language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
+            p_mn = _get_meeting_note(item["note"])
+            render_docx(note=p_mn, output_path=p_docx, source_name=input_path.name, language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
+            render_pdf(note=p_mn, output_path=p_pdf, source_name=input_path.name, language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
+            p_md_text = render_note_markdown(p_mn, language=note_language, note_preset="presentationSummary" if auto_segment else note_type)
             p_md.write_text(p_md_text, encoding="utf-8")
             p_txt.write_text(p_md_text, encoding="utf-8")
+
 
         commit_sha = get_git_commit_sha(repo_root)
 
@@ -473,13 +513,16 @@ def process_meeting(
                 "size_bytes": orig_size_bytes,
                 "has_video_stream": has_video_stream,
                 "source_video_discarded": source_video_discarded,
+                "source_codec": str(prep_codec),
+                "source_sample_rate": prep_rate,
+                "source_channels": prep_channels,
             },
             "audio_derivative": {
                 "filename": prep_filename,
                 "size_bytes": derived_wav_size,
-                "codec": str(prep_codec),
-                "sample_rate": prep_rate,
-                "channels": prep_channels,
+                "codec": "pcm_s16le",
+                "sample_rate": 16000,
+                "channels": 1,
             },
             "transcription_telemetry": {
                 "audio_duration_seconds": audio_seconds,
@@ -500,6 +543,7 @@ def process_meeting(
             "has_context": bool(context and context.strip()),
             "has_vocabulary": bool(vocabulary and vocabulary.strip()),
             "auto_segmentation_used": auto_segment,
+            "segmentation_status": "success" if auto_segment else "disabled",
             "presentation_count": len(pres_blocks),
             "total_block_count": len(presentation_ranges),
             "detected_presentations": [
@@ -517,9 +561,30 @@ def process_meeting(
         with open(provenance_path, "w", encoding="utf-8") as f:
             json.dump(provenance_data, f, indent=2)
 
+        summary_report_data = {
+            "title": input_path.name,
+            "note_preset": note_type,
+            "note_language": note_language,
+            "auto_segmentation_used": auto_segment,
+            "segmentation_status": "success" if auto_segment else "disabled",
+            "presentation_count": len(pres_blocks),
+            "presentations": [
+                {
+                    "index": i + 1,
+                    "title": item["title"],
+                    "start_time_seconds": segments[item["range"].start_idx]["start"] if item["range"].start_idx < len(segments) else 0.0,
+                    "end_time_seconds": segments[item["range"].end_idx]["end"] if item["range"].end_idx < len(segments) else 0.0,
+                    "has_summary": bool(item["note"].final_note.summary),
+                }
+                for i, item in enumerate(generated_notes)
+            ],
+            "audio_duration_seconds": audio_seconds,
+            "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+
         summary_report_path = audit_dir / "summary_report.json"
         with open(summary_report_path, "w", encoding="utf-8") as f:
-            json.dump(provenance_data, f, indent=2)
+            json.dump(summary_report_data, f, indent=2, ensure_ascii=False)
 
         # Build meeting_notes.zip in out_dir
         zip_path = out_dir / "meeting_notes.zip"
