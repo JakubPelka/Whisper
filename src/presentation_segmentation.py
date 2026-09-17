@@ -281,7 +281,6 @@ def segment_presentations_with_luna(
             model=model_name,
             messages=messages,
             response_format={"type": "json_object"},
-            temperature=0.1,
         )
         raw_content = response.choices[0].message.content or "{}"
     except Exception as e:
