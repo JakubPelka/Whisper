@@ -132,6 +132,111 @@ def test_process_meeting_multi_presentation_flow(tmp_path, monkeypatch):
             sum_data = json.loads(zf.read("audit/summary_report.json").decode("utf-8"))
             assert sum_data["presentation_count"] == 2
             assert sum_data["segmentation_status"] == "success"
+            assert len(sum_data["presentations"]) == 2
+            assert sum_data["presentations"][0]["has_summary"] is True
+            assert sum_data["presentations"][0]["note_generated"] is True
+            assert sum_data["presentations"][1]["has_summary"] is True
+            assert sum_data["presentations"][1]["note_generated"] is True
+
+
+def test_summary_report_reports_note_generated_when_legacy_summary_is_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-dummy-key")
+
+    audio_path = tmp_path / "multi_test_empty_summary.wav"
+    audio_path.write_bytes(b"dummy wav content")
+
+    out_dir = tmp_path / "multi_output_empty_summary"
+
+    mock_transcription = {
+        "language": "en",
+        "segments": [
+            {"id": 0, "start": 0.0, "end": 5.0, "text": "First talk segment."},
+            {"id": 1, "start": 5.0, "end": 10.0, "text": "Second talk segment."},
+        ],
+        "model_info": {"id": "test-model", "file": "test.bin", "sha256": "dummy", "quantization": "q5_0"},
+        "runtime_info": {"version": "1.8.6", "backend": "CUDA"},
+    }
+
+    mock_segmentation = SegmentationResult(
+        version=1,
+        presentation_count=2,
+        presentations=[
+            PresentationRange(
+                index=1,
+                start_segment_id="S0000",
+                end_segment_id="S0000",
+                title="Carol Williams Keynote",
+                boundary_confidence="high",
+            ),
+            PresentationRange(
+                index=2,
+                start_segment_id="S0001",
+                end_segment_id="S0001",
+                title="Kit Stoner Keynote",
+                boundary_confidence="high",
+            ),
+        ],
+    )
+
+    # Note 1 has summary=[] (empty legacy summary!)
+    from generate_meeting_note import ThematicSection
+    mock_note1 = VerificationResult(
+        final_note=MeetingNote(
+            title=GroundedStatement(text="Carol Williams Keynote", source_segments=[0]),
+            summary=[],
+            thematic_sections=[
+                ThematicSection(
+                    heading="Keynote Section",
+                    bullet_points=[GroundedStatement(text="Carol Williams content", source_segments=[0])],
+                )
+            ],
+        ),
+        removed_or_corrected_claims=[],
+        verification_warnings=[],
+    )
+
+    mock_note2 = VerificationResult(
+        final_note=MeetingNote(
+            title=GroundedStatement(text="Kit Stoner Keynote", source_segments=[1]),
+            summary=[GroundedStatement(text="Kit Stoner summary", source_segments=[1])],
+        ),
+        removed_or_corrected_claims=[],
+        verification_warnings=[],
+    )
+
+    raw_mock_json = json.dumps(mock_segmentation.model_dump())
+    with patch("process_meeting.prepared_audio") as mock_prep, \
+         patch("process_meeting.transcribe_with_whisper_cpp", return_value=mock_transcription), \
+         patch("process_meeting.segment_presentations_with_luna", return_value=(mock_segmentation, raw_mock_json)), \
+         patch("process_meeting.create_note_with_api", side_effect=[mock_note1, mock_note2]):
+
+        mock_prep.return_value.__enter__.return_value.path = audio_path
+
+        artifacts = process_meeting(
+            input_file=audio_path,
+            recording_language="en",
+            note_type="presentationSummary",
+            note_language="pl",
+            auto_segment=True,
+            output_dir=out_dir,
+        )
+
+        assert [p.name for p in out_dir.iterdir()] == ["meeting_notes.zip"]
+
+        import zipfile
+        with zipfile.ZipFile(artifacts["zip"], "r") as zf:
+            sum_data = json.loads(zf.read("audit/summary_report.json").decode("utf-8"))
+            assert len(sum_data["presentations"]) == 2
+
+            # Presentation 1 (Carol Williams, with empty summary=[]) must have note_generated=True and has_summary=True!
+            assert sum_data["presentations"][0]["title"] == "Carol Williams Keynote"
+            assert sum_data["presentations"][0]["has_summary"] is True
+            assert sum_data["presentations"][0]["note_generated"] is True
+
+            # Presentation 2 (Kit Stoner)
+            assert sum_data["presentations"][1]["title"] == "Kit Stoner Keynote"
+            assert sum_data["presentations"][1]["has_summary"] is True
+            assert sum_data["presentations"][1]["note_generated"] is True
 
 
 def test_process_meeting_presentation_summary_segmentation_failure_aborts_without_note_generation(tmp_path, monkeypatch):

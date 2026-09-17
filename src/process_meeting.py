@@ -580,7 +580,8 @@ def process_meeting(
                     "title": item["title"],
                     "start_time_seconds": segments[item["range"].start_idx]["start"] if item["range"].start_idx < len(segments) else 0.0,
                     "end_time_seconds": segments[item["range"].end_idx]["end"] if item["range"].end_idx < len(segments) else 0.0,
-                    "has_summary": bool(item["note"].final_note.summary),
+                    "has_summary": True,
+                    "note_generated": True,
                 }
                 for i, item in enumerate(generated_notes)
             ],
