@@ -109,8 +109,8 @@ def test_process_meeting_multi_presentation_flow(tmp_path, monkeypatch):
             output_dir=out_dir,
         )
 
-        assert artifacts["zip"].name == "presentation_summary_multi_test_audio.zip"
-        assert [p.name for p in out_dir.iterdir()] == ["presentation_summary_multi_test_audio.zip"]
+        assert artifacts["zip"].name == "presentation_summary_multi_test.zip"
+        assert [p.name for p in out_dir.iterdir()] == ["presentation_summary_multi_test.zip"]
 
         import zipfile
         with zipfile.ZipFile(artifacts["zip"], "r") as zf:

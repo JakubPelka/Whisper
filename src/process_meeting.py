@@ -109,7 +109,7 @@ def sanitize_filename_stem(stem: str) -> str:
     if not stem:
         return "recording"
     s = re.sub(r'[/\\:*?"<>|\x00-\x1f]', "_", stem)
-    s = s.strip(" .")
+    s = re.sub(r"_+", "_", s).strip(" ._")
     return s or "recording"
 
 

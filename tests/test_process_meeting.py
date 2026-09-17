@@ -78,9 +78,9 @@ def test_process_meeting_flow(tmp_path, mock_meeting_note, monkeypatch):
         assert call_kwargs["meeting_context"] == "Test context"
 
     assert artifacts["zip"].is_file()
-    assert artifacts["zip"].name == "service_note_test_audio.zip"
+    assert artifacts["zip"].name == "service_note_test_input.zip"
     # Verify ZIP-Only output contract in output_dir
-    assert [p.name for p in out_dir.iterdir()] == ["service_note_test_audio.zip"]
+    assert [p.name for p in out_dir.iterdir()] == ["service_note_test_input.zip"]
 
     with zipfile.ZipFile(artifacts["zip"], "r") as zf:
         names = zf.namelist()
