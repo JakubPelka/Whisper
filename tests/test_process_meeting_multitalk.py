@@ -109,7 +109,8 @@ def test_process_meeting_multi_presentation_flow(tmp_path, monkeypatch):
             output_dir=out_dir,
         )
 
-        assert [p.name for p in out_dir.iterdir()] == ["meeting_notes.zip"]
+        assert artifacts["zip"].name == "presentation_summary_multi_test_audio.zip"
+        assert [p.name for p in out_dir.iterdir()] == ["presentation_summary_multi_test_audio.zip"]
 
         import zipfile
         with zipfile.ZipFile(artifacts["zip"], "r") as zf:
@@ -221,7 +222,8 @@ def test_summary_report_reports_note_generated_when_legacy_summary_is_empty(tmp_
             output_dir=out_dir,
         )
 
-        assert [p.name for p in out_dir.iterdir()] == ["meeting_notes.zip"]
+        assert artifacts["zip"].name == "presentation_summary_multi_test_empty_summary.zip"
+        assert [p.name for p in out_dir.iterdir()] == ["presentation_summary_multi_test_empty_summary.zip"]
 
         import zipfile
         with zipfile.ZipFile(artifacts["zip"], "r") as zf:
@@ -350,6 +352,8 @@ def test_process_meeting_single_presentation_success_flow(tmp_path, monkeypatch)
 
         mock_create_note.assert_called_once()
         assert artifacts["zip"].is_file()
+        assert artifacts["zip"].name == "presentation_summary_single_test.zip"
+        assert [p.name for p in out_dir.iterdir()] == ["presentation_summary_single_test.zip"]
 
         import zipfile
         with zipfile.ZipFile(artifacts["zip"], "r") as zf:

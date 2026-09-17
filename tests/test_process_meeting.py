@@ -78,8 +78,9 @@ def test_process_meeting_flow(tmp_path, mock_meeting_note, monkeypatch):
         assert call_kwargs["meeting_context"] == "Test context"
 
     assert artifacts["zip"].is_file()
+    assert artifacts["zip"].name == "service_note_test_audio.zip"
     # Verify ZIP-Only output contract in output_dir
-    assert [p.name for p in out_dir.iterdir()] == ["meeting_notes.zip"]
+    assert [p.name for p in out_dir.iterdir()] == ["service_note_test_audio.zip"]
 
     with zipfile.ZipFile(artifacts["zip"], "r") as zf:
         names = zf.namelist()
@@ -147,7 +148,8 @@ def test_process_meeting_video_cleanup_and_provenance(tmp_path, mock_meeting_not
 
     # Assert source video file unlinked from workspace after audio extraction verification
     assert not video_path.exists()
-    assert [p.name for p in out_dir.iterdir()] == ["meeting_notes.zip"]
+    assert artifacts["zip"].name == "meeting_notes_video_input.zip"
+    assert [p.name for p in out_dir.iterdir()] == ["meeting_notes_video_input.zip"]
 
     # Assert provenance records original source metadata inside zip
     with zipfile.ZipFile(artifacts["zip"], "r") as zf:
@@ -159,3 +161,20 @@ def test_process_meeting_video_cleanup_and_provenance(tmp_path, mock_meeting_not
     assert prov["original_source"]["has_video_stream"] is True
     assert prov["original_source"]["source_video_discarded"] is True
     assert "audio_derivative" in prov
+
+
+def test_preset_slug_and_filename_sanitization():
+    from process_meeting import get_preset_slug, sanitize_filename_stem
+
+    assert get_preset_slug("presentationSummary") == "presentation_summary"
+    assert get_preset_slug("meetingNotes") == "meeting_notes"
+    assert get_preset_slug("shortSummary") == "short_summary"
+    assert get_preset_slug("conversationNote") == "conversation_note"
+    assert get_preset_slug("serviceNote") == "service_note"
+    assert get_preset_slug("") == "meeting_notes"
+
+    assert sanitize_filename_stem("Day_1_1") == "Day_1_1"
+    assert sanitize_filename_stem("Day 1 1") == "Day 1 1"
+    assert sanitize_filename_stem("Spotkanie/1:1?*") == "Spotkanie_1_1"
+    assert sanitize_filename_stem("") == "recording"
+

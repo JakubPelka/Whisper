@@ -96,6 +96,24 @@ def slugify_title(title: str) -> str:
     return slug[:30] or "presentation"
 
 
+def get_preset_slug(preset: str) -> str:
+    if not preset:
+        return "meeting_notes"
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", preset)
+    s = re.sub(r"[^\w]+", "_", s).lower()
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s or "meeting_notes"
+
+
+def sanitize_filename_stem(stem: str) -> str:
+    if not stem:
+        return "recording"
+    s = re.sub(r'[/\\:*?"<>|\x00-\x1f]', "_", stem)
+    s = s.strip(" .")
+    return s or "recording"
+
+
+
 def sanitize_grounding(note: MeetingNote, start_idx: int, end_idx: int) -> MeetingNote:
     """Hard-enforce grounding invariant: all source_segment_ids must be within [start_idx, end_idx]."""
 
@@ -593,8 +611,11 @@ def process_meeting(
         with open(summary_report_path, "w", encoding="utf-8") as f:
             json.dump(summary_report_data, f, indent=2, ensure_ascii=False)
 
-        # Build meeting_notes.zip in out_dir
-        zip_path = out_dir / "meeting_notes.zip"
+        # Build final output ZIP in out_dir named <preset_slug>_<input_stem>.zip
+        preset_slug = get_preset_slug(note_type)
+        stem_slug = sanitize_filename_stem(input_path.stem)
+        zip_name = f"{preset_slug}_{stem_slug}.zip"
+        zip_path = out_dir / zip_name
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for root_path, dirs, files in os.walk(staging_dir):
                 for file_name in sorted(files):
@@ -602,9 +623,9 @@ def process_meeting(
                     rel_p = full_p.relative_to(staging_dir)
                     zf.write(full_p, arcname=str(rel_p))
 
-        # Purge any non-zip files/dirs in out_dir so OUTPUT_DIR contains ONLY meeting_notes.zip
+        # Purge any non-zip files/dirs in out_dir so OUTPUT_DIR contains ONLY the final zip
         for item in out_dir.iterdir():
-            if item.name != "meeting_notes.zip":
+            if item.name != zip_name:
                 try:
                     if item.is_dir():
                         shutil.rmtree(item)
