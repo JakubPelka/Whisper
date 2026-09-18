@@ -84,10 +84,10 @@ def test_process_meeting_flow(tmp_path, mock_meeting_note, monkeypatch):
 
     with zipfile.ZipFile(artifacts["zip"], "r") as zf:
         names = zf.namelist()
-        assert "01_full_recording/note.docx" in names
-        assert "01_full_recording/note.pdf" in names
-        assert "01_full_recording/note.txt" in names
-        assert "01_full_recording/note.md" in names
+        assert "01_full_recording/01_full_recording.docx" in names
+        assert "01_full_recording/01_full_recording.pdf" in names
+        assert "01_full_recording/01_full_recording.txt" in names
+        assert "01_full_recording/01_full_recording.md" in names
         assert "audit/provenance.json" in names
         assert "transcript/transcript.json" in names
         assert "transcript/transcript.txt" in names

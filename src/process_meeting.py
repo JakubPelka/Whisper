@@ -502,10 +502,10 @@ def process_meeting(
             p_folder = staging_dir / p_folder_name
             p_folder.mkdir(parents=True, exist_ok=True)
 
-            p_docx = p_folder / "note.docx"
-            p_pdf = p_folder / "note.pdf"
-            p_md = p_folder / "note.md"
-            p_txt = p_folder / "note.txt"
+            p_docx = p_folder / f"{p_folder_name}.docx"
+            p_pdf = p_folder / f"{p_folder_name}.pdf"
+            p_md = p_folder / f"{p_folder_name}.md"
+            p_txt = p_folder / f"{p_folder_name}.txt"
 
             p_mn = _get_meeting_note(item["note"])
             render_docx(note=p_mn, output_path=p_docx, source_name=input_path.name, language=note_language, note_preset="presentationSummary" if auto_segment else note_type)

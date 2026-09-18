@@ -115,12 +115,12 @@ def test_process_meeting_multi_presentation_flow(tmp_path, monkeypatch):
         import zipfile
         with zipfile.ZipFile(artifacts["zip"], "r") as zf:
             names = zf.namelist()
-            assert "01_first_talk/note.docx" in names
-            assert "01_first_talk/note.pdf" in names
-            assert "01_first_talk/note.md" in names
-            assert "02_second_talk/note.docx" in names
-            assert "02_second_talk/note.pdf" in names
-            assert "02_second_talk/note.md" in names
+            assert "01_first_talk/01_first_talk.docx" in names
+            assert "01_first_talk/01_first_talk.pdf" in names
+            assert "01_first_talk/01_first_talk.md" in names
+            assert "02_second_talk/02_second_talk.docx" in names
+            assert "02_second_talk/02_second_talk.pdf" in names
+            assert "02_second_talk/02_second_talk.md" in names
             assert "audit/provenance.json" in names
             assert "audit/presentation_segments.json" in names
             assert "audit/summary_report.json" in names
